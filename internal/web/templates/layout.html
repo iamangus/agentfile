@@ -1,17 +1,50 @@
 {{define "navbar"}}
-<nav class="uk-navbar-container border-b bg-background/95 backdrop-blur-sm" uk-navbar style="min-height: 52px;">
-  <div class="uk-navbar-left px-5">
-    <a class="uk-navbar-item uk-logo text-sm font-semibold tracking-tight" href="/">
-      <span class="text-foreground">agent</span><span class="text-primary">file</span>
+<style>
+  .nav-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    color: hsl(var(--muted-foreground));
+    transition: background 0.15s, color 0.15s;
+  }
+  .nav-tab:hover {
+    background: hsl(var(--muted) / 0.7);
+    color: hsl(var(--foreground));
+  }
+  .nav-tab.active {
+    background: hsl(var(--muted));
+    color: hsl(var(--foreground));
+  }
+  .nav-tab svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+</style>
+<nav class="border-b bg-background/95 backdrop-blur-sm" style="min-height: 52px; display: flex; align-items: center; padding: 0 20px; gap: 16px;">
+  <a class="text-sm font-semibold tracking-tight" href="/" style="text-decoration: none;">
+    <span style="color: hsl(var(--foreground));">agent</span><span style="color: hsl(var(--primary));">file</span>
+  </a>
+
+  <div style="display: flex; align-items: center; gap: 4px; background: hsl(var(--muted) / 0.4); border: 1px solid hsl(var(--border)); border-radius: 9px; padding: 3px;">
+    <a href="/chat" class="nav-tab {{if eq .ActivePage "chat"}}active{{end}}">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+      </svg>
+      Chat
     </a>
-    <ul class="uk-navbar-nav ml-2">
-      <li class="{{if eq .ActivePage "chat"}}uk-active{{end}}">
-        <a href="/chat" class="text-sm px-3">Chat</a>
-      </li>
-      <li class="{{if eq .ActivePage "agents"}}uk-active{{end}}">
-        <a href="/agents" class="text-sm px-3">Agents</a>
-      </li>
-    </ul>
+    <a href="/agents" class="nav-tab {{if eq .ActivePage "agents"}}active{{end}}">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="8" r="4"></circle>
+        <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"></path>
+      </svg>
+      Agents
+    </a>
   </div>
 </nav>
 {{end}}
