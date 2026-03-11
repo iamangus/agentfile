@@ -19,6 +19,13 @@ type AgentResolver interface {
 	GetAgentDef(name string) (*config.Definition, bool)
 }
 
+// Reporter receives status updates during an agent run.
+// Implementations must be safe for concurrent use.
+// A nil Reporter is valid and silently drops all events.
+type Reporter interface {
+	Update(status string)
+}
+
 // Runtime manages agent execution.
 type Runtime struct {
 	resolver  AgentResolver
@@ -35,9 +42,22 @@ func NewRuntime(resolver AgentResolver, pool *mcpclient.Pool, llmClient llm.Clie
 	}
 }
 
+// report sends a status update if r is non-nil.
+func report(r Reporter, status string) {
+	if r != nil {
+		r.Update(status)
+	}
+}
+
 // Run executes an agent with the given user input and returns the final text response.
 func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput string) (string, error) {
+	return rt.RunWithReporter(ctx, def, userInput, nil)
+}
+
+// RunWithReporter is like Run but emits status updates via r throughout execution.
+func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, userInput string, r Reporter) (string, error) {
 	slog.Info("agent run started", "agent", def.Name, "input_len", len(userInput))
+	report(r, "Thinking…")
 
 	// Build tool definitions for the LLM
 	toolDefs, toolMap := rt.buildToolSet(def)
@@ -88,7 +108,8 @@ func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput st
 
 		// Process tool calls
 		for _, tc := range assistantMsg.ToolCalls {
-			result, err := rt.executeTool(ctx, tc, toolMap)
+			report(r, toolStatus(tc.Function.Name, toolMap))
+			result, err := rt.executeTool(ctx, tc, toolMap, r)
 
 			var resultContent string
 			if err != nil {
@@ -104,9 +125,32 @@ func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput st
 				ToolCallID: tc.ID,
 			})
 		}
+
+		report(r, "Thinking…")
 	}
 
 	return "", fmt.Errorf("agent %s exceeded max turns (%d)", def.Name, maxTurns)
+}
+
+// toolStatus returns a human-readable status string for a tool call.
+func toolStatus(llmName string, toolMap map[string]*toolRef) string {
+	ref, ok := toolMap[llmName]
+	if !ok {
+		return fmt.Sprintf("Calling %s…", llmName)
+	}
+	if ref.agentDef != nil {
+		return fmt.Sprintf("Asking %s…", ref.agentDef.Name)
+	}
+	// Pretty-print the tool name: "searxng_web_search" → "Running web search…"
+	switch ref.toolName {
+	case "searxng_web_search", "web_search":
+		return "Running web search…"
+	case "web_url_read", "url_read", "fetch_url":
+		return "Reading webpage…"
+	default:
+		name := strings.ReplaceAll(ref.toolName, "_", " ")
+		return fmt.Sprintf("Using %s…", name)
+	}
 }
 
 // toolRef describes how to call a tool: either an MCP tool or a sub-agent.
@@ -182,7 +226,7 @@ func (rt *Runtime) buildToolSet(def *config.Definition) ([]llm.ToolDef, map[stri
 }
 
 // executeTool runs a tool call and returns the text result.
-func (rt *Runtime) executeTool(ctx context.Context, tc llm.ToolCall, toolMap map[string]*toolRef) (string, error) {
+func (rt *Runtime) executeTool(ctx context.Context, tc llm.ToolCall, toolMap map[string]*toolRef, r Reporter) (string, error) {
 	ref, ok := toolMap[tc.Function.Name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", tc.Function.Name)
@@ -197,7 +241,7 @@ func (rt *Runtime) executeTool(ctx context.Context, tc llm.ToolCall, toolMap map
 			return "", fmt.Errorf("parse agent call input: %w", err)
 		}
 		slog.Info("tool call: agent", "agent", ref.agentDef.Name, "input_len", len(params.Message))
-		return rt.Run(ctx, ref.agentDef, params.Message)
+		return rt.RunWithReporter(ctx, ref.agentDef, params.Message, r)
 	}
 
 	// MCP tool call

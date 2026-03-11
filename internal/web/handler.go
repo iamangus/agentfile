@@ -37,6 +37,32 @@ type Session struct {
 	CreatedAt time.Time
 }
 
+// runEvent is a single SSE event for an in-flight agent run.
+type runEvent struct {
+	typ  string // "status" | "done" | "error"
+	data string
+}
+
+// agentRun tracks an in-flight agent run.
+type agentRun struct {
+	ch     chan runEvent // closed when the run finishes
+	result string        // populated on done
+	err    error         // populated on error
+}
+
+// chanReporter implements agent.Reporter by sending status updates to a channel.
+type chanReporter struct {
+	ch chan runEvent
+}
+
+func (r *chanReporter) Update(status string) {
+	// Non-blocking send — drop the event if no SSE client is connected yet.
+	select {
+	case r.ch <- runEvent{typ: "status", data: status}:
+	default:
+	}
+}
+
 // Handler serves the web UI pages.
 type Handler struct {
 	store    DefinitionStore
@@ -44,6 +70,7 @@ type Handler struct {
 	tmpl     *template.Template
 	mu       sync.Mutex
 	sessions map[string]*Session
+	runs     map[string]*agentRun
 }
 
 // NewHandler creates a new web UI handler.
@@ -57,6 +84,7 @@ func NewHandler(store DefinitionStore, runtime *agent.Runtime) (*Handler, error)
 		runtime:  runtime,
 		tmpl:     tmpl,
 		sessions: make(map[string]*Session),
+		runs:     make(map[string]*agentRun),
 	}, nil
 }
 
@@ -67,6 +95,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /chat/sessions", h.newSession)
 	mux.HandleFunc("GET /chat/sessions/list", h.sessionListPartial)
 	mux.HandleFunc("POST /chat/sessions/{id}/messages", h.postMessage)
+	mux.HandleFunc("GET /chat/runs/{id}/events", h.runEvents)
 	mux.HandleFunc("GET /agents", h.agentsPage)
 	mux.HandleFunc("GET /agents/list", h.agentListPartial)
 	mux.HandleFunc("GET /agents/{name}/edit", h.agentEditPartial)
@@ -162,7 +191,7 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	session.Messages = append(session.Messages, userMsg)
 	h.mu.Unlock()
 
-	// Look up the agent definition
+	// Look up agent definition
 	defs := h.store.ListDefinitions()
 	var def *config.Definition
 	for _, d := range defs {
@@ -172,40 +201,99 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var assistantMsg Message
-	if def == nil {
-		assistantMsg = Message{
-			Role:    "assistant",
-			Content: "Error: agent \"" + session.AgentName + "\" not found.",
-			Time:    time.Now(),
-		}
-	} else {
-		result, err := h.runtime.Run(r.Context(), def, content)
-		if err != nil {
-			slog.Error("agent run failed", "agent", session.AgentName, "error", err)
-			assistantMsg = Message{
-				Role:    "assistant",
-				Content: "Error: " + err.Error(),
-				Time:    time.Now(),
-			}
-		} else {
-			assistantMsg = Message{Role: "assistant", Content: result, Time: time.Now()}
-		}
+	// Create a run and start the agent asynchronously.
+	runID := newID()
+	run := &agentRun{
+		// Buffered so the agent goroutine never blocks on status events.
+		ch: make(chan runEvent, 32),
 	}
 
 	h.mu.Lock()
-	session.Messages = append(session.Messages, assistantMsg)
+	h.runs[runID] = run
 	h.mu.Unlock()
 
-	if r.Header.Get("HX-Request") == "true" {
-		// Only return the assistant message; the user bubble is rendered
-		// optimistically on the client before the request is sent.
-		msgs := []Message{assistantMsg}
-		h.renderPartial(w, "messages", msgs)
+	go func() {
+		rep := &chanReporter{ch: run.ch}
+		var result string
+		var err error
+
+		if def == nil {
+			err = fmt.Errorf("agent %q not found", session.AgentName)
+		} else {
+			result, err = h.runtime.RunWithReporter(r.Context(), def, content, rep)
+		}
+
+		// Store result and append to session
+		h.mu.Lock()
+		run.result = result
+		run.err = err
+		if err != nil {
+			slog.Error("agent run failed", "agent", session.AgentName, "error", err)
+			session.Messages = append(session.Messages, Message{
+				Role:    "assistant",
+				Content: "Error: " + err.Error(),
+				Time:    time.Now(),
+			})
+			run.ch <- runEvent{typ: "error", data: err.Error()}
+		} else {
+			session.Messages = append(session.Messages, Message{
+				Role:    "assistant",
+				Content: result,
+				Time:    time.Now(),
+			})
+			run.ch <- runEvent{typ: "done", data: result}
+		}
+		h.mu.Unlock()
+		close(run.ch)
+	}()
+
+	// Return the run ID so the client can open an SSE stream.
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprint(w, runID)
+}
+
+// runEvents streams SSE events for a given run ID.
+func (h *Handler) runEvents(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+
+	h.mu.Lock()
+	run := h.runs[runID]
+	h.mu.Unlock()
+
+	if run == nil {
+		http.Error(w, "run not found", http.StatusNotFound)
 		return
 	}
 
-	http.Redirect(w, r, "/chat?session="+sessionID, http.StatusSeeOther)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	for {
+		select {
+		case evt, open := <-run.ch:
+			if !open {
+				return
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.typ, evt.data)
+			flusher.Flush()
+			if evt.typ == "done" || evt.typ == "error" {
+				// Clean up run after sending terminal event
+				h.mu.Lock()
+				delete(h.runs, runID)
+				h.mu.Unlock()
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 // --- Agents page ---

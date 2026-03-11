@@ -100,17 +100,11 @@
     .msg-assistant th { background: hsl(var(--background) / 0.4); font-weight: 600; }
 
     /* Thinking indicator */
-    @keyframes blink { 0%,100%{opacity:.3} 50%{opacity:1} }
-    .thinking span {
+    @keyframes pulse-text { 0%,100%{opacity:.5} 50%{opacity:1} }
+    .thinking-bubble .thinking-status {
       display: inline-block;
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      background: hsl(var(--muted-foreground));
-      margin: 0 2px;
-      animation: blink 1.2s infinite;
+      animation: pulse-text 1.4s ease-in-out infinite;
     }
-    .thinking span:nth-child(2) { animation-delay: 0.2s; }
-    .thinking span:nth-child(3) { animation-delay: 0.4s; }
 
     /* Send input */
     .chat-input-area {
@@ -261,14 +255,7 @@
 
   <!-- Input -->
   <div class="chat-input-area shrink-0">
-    <form
-      id="chat-form"
-      hx-post="/chat/sessions/{{.Current.ID}}/messages"
-      hx-target="#message-list"
-      hx-swap="beforeend"
-      hx-on:htmx:before-request="appendUserBubble(this)"
-      hx-on::after-request="var ml = document.getElementById('message-list'); if(ml) ml.scrollTop = ml.scrollHeight;"
-    >
+    <form id="chat-form" onsubmit="sendMessage(event, '{{.Current.ID}}')">
       <div class="chat-input-wrap">
         <input
           id="chat-input"
@@ -296,29 +283,108 @@
       el.removeAttribute('data-raw');
     });
   }
-
   document.addEventListener('DOMContentLoaded', renderMarkdown);
-  document.addEventListener('htmx:afterSettle', renderMarkdown);
 
-  function appendUserBubble(form) {
-    var input = form.querySelector('[name="message"]');
-    if (!input || !input.value.trim()) return;
+  function scrollToBottom() {
+    var ml = document.getElementById('message-list');
+    if (ml) ml.scrollTop = ml.scrollHeight;
+  }
+
+  function appendUserBubble(text) {
     var ml = document.getElementById('message-list');
     if (!ml) return;
-    var text = input.value;
     var div = document.createElement('div');
     div.className = 'flex justify-end';
-    div.innerHTML = '<div class="msg-user"></div>';
-    div.querySelector('.msg-user').textContent = text;
+    var bubble = document.createElement('div');
+    bubble.className = 'msg-user';
+    bubble.textContent = text;
+    div.appendChild(bubble);
     ml.appendChild(div);
-    ml.scrollTop = ml.scrollHeight;
+    scrollToBottom();
+  }
+
+  function appendThinkingBubble() {
+    var ml = document.getElementById('message-list');
+    if (!ml) return null;
+    var wrap = document.createElement('div');
+    wrap.className = 'flex justify-start';
+    wrap.innerHTML =
+      '<div class="msg-assistant thinking-bubble">' +
+        '<span class="thinking-status text-xs text-muted-foreground italic">Thinking\u2026</span>' +
+      '</div>';
+    ml.appendChild(wrap);
+    scrollToBottom();
+    return wrap;
+  }
+
+  function replaceThinkingBubble(wrap, content) {
+    var bubble = wrap.querySelector('.thinking-bubble');
+    if (!bubble) return;
+    bubble.classList.remove('thinking-bubble');
+    bubble.setAttribute('data-raw', content);
+    bubble.innerHTML = marked.parse(content);
+    scrollToBottom();
+  }
+
+  function sendMessage(evt, sessionID) {
+    evt.preventDefault();
+    var input = document.getElementById('chat-input');
+    var text = input.value.trim();
+    if (!text) return;
+
     input.value = '';
-    var hidden = document.createElement('input');
-    hidden.type = 'hidden';
-    hidden.name = 'message';
-    hidden.value = text;
-    form.appendChild(hidden);
-    setTimeout(function() { form.removeChild(hidden); }, 0);
+    input.disabled = true;
+
+    appendUserBubble(text);
+    var thinkingWrap = appendThinkingBubble();
+
+    var fd = new FormData();
+    fd.append('message', text);
+
+    fetch('/chat/sessions/' + sessionID + '/messages', {
+      method: 'POST',
+      body: fd,
+    })
+    .then(function(res) {
+      if (!res.ok) throw new Error('request failed');
+      return res.text();
+    })
+    .then(function(runID) {
+      var es = new EventSource('/chat/runs/' + runID + '/events');
+
+      es.addEventListener('status', function(e) {
+        var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
+        if (statusEl) statusEl.textContent = e.data;
+        scrollToBottom();
+      });
+
+      es.addEventListener('done', function(e) {
+        es.close();
+        replaceThinkingBubble(thinkingWrap, e.data);
+        input.disabled = false;
+        input.focus();
+      });
+
+      es.addEventListener('error', function(e) {
+        es.close();
+        var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
+        if (statusEl) {
+          statusEl.textContent = 'Error: ' + (e.data || 'something went wrong');
+          statusEl.classList.add('text-destructive');
+          statusEl.classList.remove('italic');
+        }
+        input.disabled = false;
+      });
+    })
+    .catch(function(err) {
+      var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
+      if (statusEl) {
+        statusEl.textContent = 'Error: ' + err.message;
+        statusEl.classList.add('text-destructive');
+        statusEl.classList.remove('italic');
+      }
+      input.disabled = false;
+    });
   }
   </script>
 </div>
