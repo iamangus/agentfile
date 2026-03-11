@@ -10,6 +10,7 @@
   <script src="https://cdn.jsdelivr.net/npm/uikit@3.23.6/dist/js/uikit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/uikit@3.23.6/dist/js/uikit-icons.min.js"></script>
   <script type="module" src="https://cdn.jsdelivr.net/npm/franken-ui@2.1.0/dist/js/core.iife.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
   <style>
     html, body { height: 100%; margin: 0; }
     .page-body { flex: 1; display: flex; overflow: hidden; height: calc(100vh - 52px); }
@@ -48,10 +49,55 @@
       padding: 10px 14px;
       max-width: 72%;
       font-size: 14px;
-      line-height: 1.5;
-      white-space: pre-wrap;
+      line-height: 1.6;
       word-break: break-word;
     }
+    /* Prose styles for markdown inside assistant bubbles */
+    .msg-assistant p { margin: 0 0 0.6em; }
+    .msg-assistant p:last-child { margin-bottom: 0; }
+    .msg-assistant ul, .msg-assistant ol { margin: 0.4em 0 0.6em 1.4em; padding: 0; }
+    .msg-assistant li { margin-bottom: 0.2em; }
+    .msg-assistant h1,.msg-assistant h2,.msg-assistant h3,
+    .msg-assistant h4,.msg-assistant h5,.msg-assistant h6 {
+      font-weight: 600; margin: 0.8em 0 0.3em;
+    }
+    .msg-assistant h1 { font-size: 1.2em; }
+    .msg-assistant h2 { font-size: 1.1em; }
+    .msg-assistant h3 { font-size: 1em; }
+    .msg-assistant code {
+      background: hsl(var(--background) / 0.6);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85em;
+    }
+    .msg-assistant pre {
+      background: hsl(var(--background) / 0.6);
+      border-radius: 8px;
+      padding: 10px 12px;
+      overflow-x: auto;
+      margin: 0.6em 0;
+    }
+    .msg-assistant pre code {
+      background: none;
+      padding: 0;
+      font-size: 0.85em;
+    }
+    .msg-assistant blockquote {
+      border-left: 3px solid hsl(var(--border));
+      margin: 0.6em 0;
+      padding-left: 10px;
+      color: hsl(var(--muted-foreground));
+    }
+    .msg-assistant a { color: hsl(var(--primary)); text-decoration: underline; }
+    .msg-assistant hr { border: none; border-top: 1px solid hsl(var(--border)); margin: 0.8em 0; }
+    .msg-assistant table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.9em; }
+    .msg-assistant th, .msg-assistant td {
+      border: 1px solid hsl(var(--border));
+      padding: 4px 8px;
+      text-align: left;
+    }
+    .msg-assistant th { background: hsl(var(--background) / 0.4); font-weight: 600; }
 
     /* Thinking indicator */
     @keyframes blink { 0%,100%{opacity:.3} 50%{opacity:1} }
@@ -244,6 +290,16 @@
     </form>
   </div>
   <script>
+  function renderMarkdown() {
+    document.querySelectorAll('.msg-assistant[data-raw]').forEach(function(el) {
+      el.innerHTML = marked.parse(el.dataset.raw);
+      el.removeAttribute('data-raw');
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', renderMarkdown);
+  document.addEventListener('htmx:afterSettle', renderMarkdown);
+
   function appendUserBubble(form) {
     var input = form.querySelector('[name="message"]');
     if (!input || !input.value.trim()) return;
@@ -257,9 +313,6 @@
     ml.appendChild(div);
     ml.scrollTop = ml.scrollHeight;
     input.value = '';
-    // Prevent HTMX from reading an empty field — put value back on the request
-    // by patching the form data via a hidden input that HTMX will pick up,
-    // then remove it after.
     var hidden = document.createElement('input');
     hidden.type = 'hidden';
     hidden.name = 'message';
@@ -290,7 +343,7 @@
 </div>
 {{else}}
 <div class="flex justify-start">
-  <div class="msg-assistant">{{.Content}}</div>
+  <div class="msg-assistant" data-raw="{{.Content}}"></div>
 </div>
 {{end}}
 {{end}}
