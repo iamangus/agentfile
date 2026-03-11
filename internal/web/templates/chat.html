@@ -1,5 +1,5 @@
 {{define "chat.html"}}<!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -216,15 +216,16 @@
   <!-- Input -->
   <div class="chat-input-area shrink-0">
     <form
+      id="chat-form"
       hx-post="/chat/sessions/{{.Current.ID}}/messages"
       hx-target="#message-list"
       hx-swap="beforeend"
-      hx-indicator="#thinking"
-      hx-on::after-request="this.reset(); var ml = document.getElementById('message-list'); if(ml) ml.scrollTop = ml.scrollHeight;"
-      onsubmit="showThinking()"
+      hx-on:htmx:before-request="appendUserBubble(this)"
+      hx-on::after-request="var ml = document.getElementById('message-list'); if(ml) ml.scrollTop = ml.scrollHeight;"
     >
       <div class="chat-input-wrap">
         <input
+          id="chat-input"
           name="message"
           type="text"
           placeholder="Message {{.Current.AgentName}}…"
@@ -242,6 +243,31 @@
       </div>
     </form>
   </div>
+  <script>
+  function appendUserBubble(form) {
+    var input = form.querySelector('[name="message"]');
+    if (!input || !input.value.trim()) return;
+    var ml = document.getElementById('message-list');
+    if (!ml) return;
+    var text = input.value;
+    var div = document.createElement('div');
+    div.className = 'flex justify-end';
+    div.innerHTML = '<div class="msg-user"></div>';
+    div.querySelector('.msg-user').textContent = text;
+    ml.appendChild(div);
+    ml.scrollTop = ml.scrollHeight;
+    input.value = '';
+    // Prevent HTMX from reading an empty field — put value back on the request
+    // by patching the form data via a hidden input that HTMX will pick up,
+    // then remove it after.
+    var hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.name = 'message';
+    hidden.value = text;
+    form.appendChild(hidden);
+    setTimeout(function() { form.removeChild(hidden); }, 0);
+  }
+  </script>
 </div>
 {{else}}
 <div class="flex-1 flex items-center justify-center h-full">

@@ -198,7 +198,9 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	if r.Header.Get("HX-Request") == "true" {
-		msgs := []Message{userMsg, assistantMsg}
+		// Only return the assistant message; the user bubble is rendered
+		// optimistically on the client before the request is sent.
+		msgs := []Message{assistantMsg}
 		h.renderPartial(w, "messages", msgs)
 		return
 	}
