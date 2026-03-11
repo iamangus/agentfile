@@ -33,10 +33,11 @@ type Message struct {
 
 // Session is an in-memory chat session.
 type Session struct {
-	ID        string
-	AgentName string
-	Messages  []Message
-	CreatedAt time.Time
+	ID          string
+	AgentName   string
+	Messages    []Message
+	CreatedAt   time.Time
+	ActiveRunID string // set while an agent run is in progress
 }
 
 // runEvent is a single SSE event for an in-flight agent run.
@@ -146,6 +147,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /chat/sessions", h.newSession)
 	mux.HandleFunc("GET /chat/sessions/list", h.sessionListPartial)
 	mux.HandleFunc("POST /chat/sessions/{id}/messages", h.postMessage)
+	mux.HandleFunc("GET /chat/sessions/{id}/run", h.activeRun)
 	mux.HandleFunc("GET /chat/runs/{id}/events", h.runEvents)
 	mux.HandleFunc("GET /agents", h.agentsPage)
 	mux.HandleFunc("GET /agents/list", h.agentListPartial)
@@ -266,6 +268,7 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 
 	h.mu.Lock()
 	h.runs[runID] = run
+	session.ActiveRunID = runID
 	h.mu.Unlock()
 
 	go func() {
@@ -306,6 +309,13 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 			run.publish(runEvent{typ: "done", data: result})
 		}
 
+		// Clear the active run ID on the session immediately so pollers stop finding it.
+		h.mu.Lock()
+		if session.ActiveRunID == runID {
+			session.ActiveRunID = ""
+		}
+		h.mu.Unlock()
+
 		// Keep the run in the map for a grace period so that clients which
 		// auto-reconnect or connect late can still get the replay buffer.
 		time.AfterFunc(30*time.Second, func() {
@@ -316,6 +326,31 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Return the run ID so the client can open an SSE stream.
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprint(w, runID)
+}
+
+// activeRun returns the current active run ID for a session, or 204 if none.
+func (h *Handler) activeRun(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	h.mu.Lock()
+	session := h.sessions[sessionID]
+	h.mu.Unlock()
+
+	if session == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	h.mu.Lock()
+	runID := session.ActiveRunID
+	h.mu.Unlock()
+
+	if runID == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain")
 	fmt.Fprint(w, runID)
 }

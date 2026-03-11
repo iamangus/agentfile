@@ -322,7 +322,10 @@
       el.removeAttribute('data-raw');
     });
   }
-  document.addEventListener('DOMContentLoaded', renderMarkdown);
+  document.addEventListener('DOMContentLoaded', function() {
+    renderMarkdown();
+    startRunPoller('{{.Current.ID}}');
+  });
 
   function scrollToBottom() {
     var ml = document.getElementById('message-list');
@@ -365,6 +368,76 @@
     scrollToBottom();
   }
 
+  // activeES tracks the current open EventSource so we don't double-subscribe.
+  var activeES = null;
+  var activeRunID = null;
+  var pollTimer = null;
+
+  function startRunPoller(sessionID) {
+    if (!sessionID) return;
+    stopRunPoller();
+    pollTimer = setInterval(function() {
+      fetch('/chat/sessions/' + sessionID + '/run')
+        .then(function(res) {
+          if (res.status === 204) return null; // no active run
+          if (!res.ok) return null;
+          return res.text();
+        })
+        .then(function(runID) {
+          if (!runID || runID === activeRunID) return;
+          // A run is active that we're not yet watching — join it.
+          joinRun(runID, null, document.getElementById('chat-input'));
+        })
+        .catch(function() {});
+    }, 2000);
+  }
+
+  function stopRunPoller() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function joinRun(runID, thinkingWrap, input) {
+    if (activeES) { activeES.close(); }
+    activeRunID = runID;
+
+    // If no thinking bubble exists yet (observer joining mid-run), create one.
+    if (!thinkingWrap) {
+      thinkingWrap = appendThinkingBubble();
+    }
+
+    var es = new EventSource('/chat/runs/' + runID + '/events');
+    activeES = es;
+
+    es.addEventListener('status', function(e) {
+      var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
+      if (statusEl) statusEl.textContent = JSON.parse(e.data);
+      scrollToBottom();
+    });
+
+    es.addEventListener('done', function(e) {
+      es.close();
+      activeES = null;
+      activeRunID = null;
+      replaceThinkingBubble(thinkingWrap, JSON.parse(e.data));
+      if (input) { input.disabled = false; input.focus(); }
+    });
+
+    // Server-sent "event: error" — agent reported a real error.
+    es.addEventListener('error', function(e) {
+      if (!e.data) return; // connection-level event, not a server error — ignore
+      es.close();
+      activeES = null;
+      activeRunID = null;
+      var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
+      if (statusEl) {
+        statusEl.textContent = 'Error: ' + JSON.parse(e.data);
+        statusEl.classList.add('text-destructive');
+        statusEl.classList.remove('italic');
+      }
+      if (input) input.disabled = false;
+    });
+  }
+
   function sendMessage(evt, sessionID) {
     evt.preventDefault();
     var input = document.getElementById('chat-input');
@@ -389,33 +462,7 @@
       return res.text();
     })
     .then(function(runID) {
-      var es = new EventSource('/chat/runs/' + runID + '/events');
-
-      es.addEventListener('status', function(e) {
-        var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
-        if (statusEl) statusEl.textContent = JSON.parse(e.data);
-        scrollToBottom();
-      });
-
-      es.addEventListener('done', function(e) {
-        es.close();
-        replaceThinkingBubble(thinkingWrap, JSON.parse(e.data));
-        input.disabled = false;
-        input.focus();
-      });
-
-      // Server-sent "event: error" — agent reported a real error.
-      es.addEventListener('error', function(e) {
-        if (!e.data) return; // connection-level error, not a server event — ignore
-        es.close();
-        var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
-        if (statusEl) {
-          statusEl.textContent = 'Error: ' + JSON.parse(e.data);
-          statusEl.classList.add('text-destructive');
-          statusEl.classList.remove('italic');
-        }
-        input.disabled = false;
-      });
+      joinRun(runID, thinkingWrap, input);
     })
     .catch(function(err) {
       var statusEl = thinkingWrap && thinkingWrap.querySelector('.thinking-status');
