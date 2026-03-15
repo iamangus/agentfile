@@ -151,7 +151,8 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Message string `json:"message"`
+		Message    string                   `json:"message"`
+		MCPServers []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -162,7 +163,31 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.agentRuntime.Run(r.Context(), def, req.Message)
+	// Connect any ephemeral MCP servers provided in the request.
+	// They are closed once the run completes, regardless of outcome.
+	ephemeral := make([]*mcpclient.EphemeralConn, 0, len(req.MCPServers))
+	for _, srv := range req.MCPServers {
+		conn, err := mcpclient.ConnectEphemeral(r.Context(), srv)
+		if err != nil {
+			slog.Error("failed to connect ephemeral MCP server", "name", srv.Name, "url", srv.URL, "error", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "failed to connect MCP server " + srv.Name + ": " + err.Error(),
+			})
+			// Close any that already succeeded before returning.
+			for _, c := range ephemeral {
+				c.Close()
+			}
+			return
+		}
+		ephemeral = append(ephemeral, conn)
+	}
+	defer func() {
+		for _, c := range ephemeral {
+			c.Close()
+		}
+	}()
+
+	result, err := h.agentRuntime.Run(r.Context(), def, req.Message, ephemeral...)
 	if err != nil {
 		slog.Error("agent run failed", "agent", name, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{

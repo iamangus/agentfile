@@ -54,5 +54,15 @@ func LoadSystem(path string) (*SystemConfig, error) {
 		cfg.OpenRouter.APIKey = os.Getenv("OPENROUTER_API_KEY")
 	}
 
+	// Expand environment variables in MCP server header values.
+	for i := range cfg.MCPServers {
+		for k, v := range cfg.MCPServers[i].Headers {
+			if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
+				envVar := v[2 : len(v)-1]
+				cfg.MCPServers[i].Headers[k] = os.Getenv(envVar)
+			}
+		}
+	}
+
 	return cfg, nil
 }

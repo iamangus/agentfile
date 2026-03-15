@@ -22,3 +22,11 @@ mcp_servers:
   #   transport: "sse"
   # - name: "github"
   #   url: "http://localhost:4001/sse"
+  #
+  # To authenticate with a bearer token, add a headers map.
+  # Use ${ENV_VAR} to read the value from an environment variable.
+  # - name: "my-auth-server"
+  #   url: "https://mcp.example.com/mcp"
+  #   transport: "streamable-http"
+  #   headers:
+  #     Authorization: "Bearer ${MY_API_TOKEN}"

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -42,9 +43,10 @@ const (
 
 // ServerConfig holds the configuration for connecting to an external MCP server.
 type ServerConfig struct {
-	Name      string `yaml:"name" json:"name"`
-	URL       string `yaml:"url" json:"url"`
-	Transport string `yaml:"transport" json:"transport"` // "sse" (default) or "streamable-http"
+	Name      string            `yaml:"name" json:"name"`
+	URL       string            `yaml:"url" json:"url"`
+	Transport string            `yaml:"transport" json:"transport"` // "sse" (default) or "streamable-http"
+	Headers   map[string]string `yaml:"headers" json:"headers"`
 }
 
 // connection holds a live MCP client connection and its discovered tools.
@@ -102,9 +104,17 @@ func (p *Pool) connectOne(ctx context.Context, srv ServerConfig) error {
 
 	switch transport {
 	case TransportSSE:
-		c, err = client.NewSSEMCPClient(srv.URL)
+		var opts []mcptransport.ClientOption
+		if len(srv.Headers) > 0 {
+			opts = append(opts, client.WithHeaders(srv.Headers))
+		}
+		c, err = client.NewSSEMCPClient(srv.URL, opts...)
 	case TransportStreamableHTTP:
-		c, err = client.NewStreamableHttpClient(srv.URL)
+		var opts []mcptransport.StreamableHTTPCOption
+		if len(srv.Headers) > 0 {
+			opts = append(opts, mcptransport.WithHTTPHeaders(srv.Headers))
+		}
+		c, err = client.NewStreamableHttpClient(srv.URL, opts...)
 	default:
 		return fmt.Errorf("unknown transport %q for server %s (use 'sse' or 'streamable-http')", transport, srv.Name)
 	}
@@ -297,6 +307,122 @@ func (p *Pool) ListServerNames() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// EphemeralConn is a short-lived connection to a single MCP server, intended
+// for use within a single agent run. It is not registered in the global Pool
+// and must be closed by the caller when the run completes.
+type EphemeralConn struct {
+	config ServerConfig
+	client *client.Client
+	tools  []mcp.Tool
+}
+
+// ConnectEphemeral connects to a single MCP server outside of the global pool
+// and returns an EphemeralConn. The caller is responsible for calling Close
+// when the connection is no longer needed.
+func ConnectEphemeral(ctx context.Context, srv ServerConfig) (*EphemeralConn, error) {
+	transport := srv.Transport
+	if transport == "" {
+		transport = TransportSSE
+	}
+
+	var c *client.Client
+	var err error
+
+	switch transport {
+	case TransportSSE:
+		var opts []mcptransport.ClientOption
+		if len(srv.Headers) > 0 {
+			opts = append(opts, client.WithHeaders(srv.Headers))
+		}
+		c, err = client.NewSSEMCPClient(srv.URL, opts...)
+	case TransportStreamableHTTP:
+		var opts []mcptransport.StreamableHTTPCOption
+		if len(srv.Headers) > 0 {
+			opts = append(opts, mcptransport.WithHTTPHeaders(srv.Headers))
+		}
+		c, err = client.NewStreamableHttpClient(srv.URL, opts...)
+	default:
+		return nil, fmt.Errorf("unknown transport %q for server %s (use 'sse' or 'streamable-http')", transport, srv.Name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create %s client for %s: %w", transport, srv.Name, err)
+	}
+
+	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if err := c.Start(startCtx); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("start %s client for %s: %w", transport, srv.Name, err)
+	}
+
+	_, err = c.Initialize(ctx, mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo: mcp.Implementation{
+				Name:    "agentfile",
+				Version: "0.1.0",
+			},
+			Capabilities: mcp.ClientCapabilities{},
+		},
+	})
+	if err != nil {
+		c.Close()
+		return nil, fmt.Errorf("initialize MCP session for %s: %w", srv.Name, err)
+	}
+
+	toolsResult, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		c.Close()
+		return nil, fmt.Errorf("list tools from %s: %w", srv.Name, err)
+	}
+
+	toolNames := make([]string, len(toolsResult.Tools))
+	for i, t := range toolsResult.Tools {
+		toolNames[i] = t.Name
+	}
+	slog.Info("ephemeral MCP connection established", "name", srv.Name, "tools", toolNames)
+
+	return &EphemeralConn{
+		config: srv,
+		client: c,
+		tools:  toolsResult.Tools,
+	}, nil
+}
+
+// ServerName returns the name this server was registered under.
+func (e *EphemeralConn) ServerName() string {
+	return e.config.Name
+}
+
+// ListTools returns all tools discovered from this ephemeral server.
+func (e *EphemeralConn) ListTools() []DiscoveredTool {
+	tools := make([]DiscoveredTool, len(e.tools))
+	for i, t := range e.tools {
+		tools[i] = DiscoveredTool{
+			ServerName: e.config.Name,
+			Tool:       t,
+		}
+	}
+	return tools
+}
+
+// CallTool invokes a tool on this ephemeral server.
+func (e *EphemeralConn) CallTool(ctx context.Context, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	return e.client.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      toolName,
+			Arguments: arguments,
+		},
+	})
+}
+
+// Close shuts down the ephemeral MCP connection.
+func (e *EphemeralConn) Close() {
+	slog.Info("closing ephemeral MCP connection", "server", e.config.Name)
+	e.client.Close()
 }
 
 // Close shuts down all MCP client connections.

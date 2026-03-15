@@ -50,17 +50,19 @@ func report(r Reporter, status string) {
 }
 
 // Run executes an agent with the given user input and returns the final text response.
-func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput string) (string, error) {
-	return rt.RunWithReporter(ctx, def, userInput, nil)
+func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput string, ephemeral ...*mcpclient.EphemeralConn) (string, error) {
+	return rt.RunWithReporter(ctx, def, userInput, nil, ephemeral...)
 }
 
 // RunWithReporter is like Run but emits status updates via r throughout execution.
-func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, userInput string, r Reporter) (string, error) {
+// Any ephemeral MCP connections provided will have their tools appended to the
+// agent's static tool list for the duration of this run only.
+func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, userInput string, r Reporter, ephemeral ...*mcpclient.EphemeralConn) (string, error) {
 	slog.Info("agent run started", "agent", def.Name, "input_len", len(userInput))
 	report(r, "Thinking…")
 
 	// Build tool definitions for the LLM
-	toolDefs, toolMap := rt.buildToolSet(def)
+	toolDefs, toolMap := rt.buildToolSet(def, ephemeral)
 
 	// Initialize conversation
 	messages := []llm.Message{
@@ -155,19 +157,25 @@ func toolStatus(llmName string, toolMap map[string]*toolRef) string {
 
 // toolRef describes how to call a tool: either an MCP tool or a sub-agent.
 type toolRef struct {
-	// For MCP tools (namespaced: "server.tool")
+	// For MCP tools from the global pool (namespaced: "server.tool")
 	serverName string
 	toolName   string
+
+	// For MCP tools from an ephemeral connection
+	ephemeral *mcpclient.EphemeralConn
 
 	// For agent-as-tool
 	agentDef *config.Definition
 }
 
 // buildToolSet creates the LLM tool definitions and a lookup map for an agent.
-func (rt *Runtime) buildToolSet(def *config.Definition) ([]llm.ToolDef, map[string]*toolRef) {
+// Static tools come from def.Tools (resolved via the global pool or agent registry).
+// Ephemeral tools are appended from any provided EphemeralConn instances.
+func (rt *Runtime) buildToolSet(def *config.Definition, ephemeral []*mcpclient.EphemeralConn) ([]llm.ToolDef, map[string]*toolRef) {
 	toolDefs := make([]llm.ToolDef, 0, len(def.Tools))
 	toolMap := make(map[string]*toolRef)
 
+	// --- Static tools from the agent definition ---
 	for _, ref := range def.Tools {
 		// Check if it's a namespaced MCP tool: "server.tool"
 		if serverName, toolName, ok := parseToolRef(ref); ok {
@@ -179,7 +187,7 @@ func (rt *Runtime) buildToolSet(def *config.Definition) ([]llm.ToolDef, map[stri
 			}
 
 			// Use the qualified name as the function name for the LLM.
-			// Dots aren't valid in OpenAI function names, so use underscore.
+			// Dots aren't valid in OpenAI function names, so use double underscore.
 			llmName := serverName + "__" + toolName
 
 			toolDefs = append(toolDefs, llm.ToolDef{
@@ -222,6 +230,28 @@ func (rt *Runtime) buildToolSet(def *config.Definition) ([]llm.ToolDef, map[stri
 			"agent", def.Name, "ref", ref)
 	}
 
+	// --- Dynamic tools from ephemeral connections ---
+	for _, conn := range ephemeral {
+		for _, dt := range conn.ListTools() {
+			llmName := dt.ServerName + "__" + dt.Tool.Name
+			toolDefs = append(toolDefs, llm.ToolDef{
+				Type: "function",
+				Function: llm.FunctionDef{
+					Name:        llmName,
+					Description: dt.Tool.Description,
+					Parameters:  dt.InputSchemaJSON(),
+				},
+			})
+			toolMap[llmName] = &toolRef{
+				serverName: dt.ServerName,
+				toolName:   dt.Tool.Name,
+				ephemeral:  conn,
+			}
+		}
+		slog.Info("appended ephemeral tools to agent tool set",
+			"agent", def.Name, "server", conn.ServerName(), "count", len(conn.ListTools()))
+	}
+
 	return toolDefs, toolMap
 }
 
@@ -241,6 +271,7 @@ func (rt *Runtime) executeTool(ctx context.Context, tc llm.ToolCall, toolMap map
 			return "", fmt.Errorf("parse agent call input: %w", err)
 		}
 		slog.Info("tool call: agent", "agent", ref.agentDef.Name, "input_len", len(params.Message))
+		// Sub-agents do not inherit ephemeral connections from the parent run.
 		return rt.RunWithReporter(ctx, ref.agentDef, params.Message, r)
 	}
 
@@ -252,7 +283,13 @@ func (rt *Runtime) executeTool(ctx context.Context, tc llm.ToolCall, toolMap map
 
 	slog.Info("tool call: mcp", "server", ref.serverName, "tool", ref.toolName, "args", args)
 
-	result, err := rt.pool.CallTool(ctx, ref.serverName, ref.toolName, args)
+	var result *mcp.CallToolResult
+	var err error
+	if ref.ephemeral != nil {
+		result, err = ref.ephemeral.CallTool(ctx, ref.toolName, args)
+	} else {
+		result, err = rt.pool.CallTool(ctx, ref.serverName, ref.toolName, args)
+	}
 	if err != nil {
 		return "", err
 	}
