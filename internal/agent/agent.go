@@ -90,9 +90,6 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 		if len(history) > 0 {
 			rl.HistorySummary(len(history))
 		}
-		rl.Tools(toolNames)
-		rl.SystemPrompt(def.SystemPrompt)
-		rl.UserMessage(userInput)
 	}
 
 	// Initialize conversation: system prompt + prior history + new user message
@@ -120,6 +117,13 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 			req.Tools = toolDefs
 		}
 
+		// Log the exact JSON being sent to the LLM
+		if rl != nil {
+			if reqJSON, err := json.MarshalIndent(req, "", "  "); err == nil {
+				rl.Request(reqJSON)
+			}
+		}
+
 		resp, err := rt.llmClient.ChatCompletion(ctx, req)
 		if err != nil {
 			runErr := fmt.Errorf("llm call failed on turn %d: %w", turn, err)
@@ -137,6 +141,13 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 			return "", messages, runErr
 		}
 
+		// Log the exact JSON received from the LLM
+		if rl != nil {
+			if respJSON, err := json.MarshalIndent(resp, "", "  "); err == nil {
+				rl.Response(respJSON)
+			}
+		}
+
 		choice := resp.Choices[0]
 		assistantMsg := choice.Message
 
@@ -148,7 +159,6 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 			content, _ := assistantMsg.Content.(string)
 			slog.Info("agent run completed", "agent", def.Name, "turns", turn+1)
 			if rl != nil {
-				rl.AssistantText(content)
 				rl.Completed(turn + 1)
 			}
 			// Return history excluding the system prompt so it can be replayed next turn.
@@ -157,28 +167,8 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 		}
 
 		// Process tool calls
-		if rl != nil {
-			textContent, _ := assistantMsg.Content.(string)
-			rl.AssistantToolCalls(textContent)
-		}
 		for _, tc := range assistantMsg.ToolCalls {
 			report(r, toolStatus(tc.Function.Name, toolMap))
-
-			// Log the tool call before executing it
-			if rl != nil {
-				ref := toolMap[tc.Function.Name]
-				if ref != nil && ref.agentDef != nil {
-					// Sub-agent: parse the message argument for the log
-					var params struct {
-						Message string `json:"message"`
-					}
-					_ = json.Unmarshal([]byte(tc.Function.Arguments), &params)
-					rl.SubAgentCall(ref.agentDef.Name, params.Message)
-				} else {
-					rl.ToolCall(tc.Function.Name, tc.Function.Arguments)
-				}
-			}
-
 			result, err := rt.executeTool(ctx, tc, toolMap, r)
 
 			var resultContent string
@@ -187,16 +177,6 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 				slog.Warn("tool call failed", "agent", def.Name, "tool", tc.Function.Name, "error", err)
 			} else {
 				resultContent = result
-			}
-
-			// Log the result (after the call)
-			if rl != nil {
-				ref := toolMap[tc.Function.Name]
-				if ref != nil && ref.agentDef != nil {
-					rl.SubAgentResult(ref.agentDef.Name, resultContent)
-				} else {
-					rl.ToolResult(tc.Function.Name, resultContent)
-				}
 			}
 
 			messages = append(messages, llm.Message{

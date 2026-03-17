@@ -5,6 +5,7 @@
 package agentlog
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -124,73 +125,21 @@ func (rl *RunLog) HistorySummary(historyLen int) {
 	rl.writeln(fmt.Sprintf("  History: %d prior message(s) prepended", historyLen))
 }
 
-// Tools logs the names of all tool definitions being sent to the LLM.
-func (rl *RunLog) Tools(names []string) {
-	if len(names) == 0 {
-		return
-	}
-	rl.writeln("\n--- TOOLS SENT TO LLM ---")
-	for _, n := range names {
-		rl.writeln(fmt.Sprintf("  - %s", n))
-	}
-}
-
-// SystemPrompt logs the agent's system prompt.
-func (rl *RunLog) SystemPrompt(prompt string) {
-	rl.writeln("\n--- SYSTEM PROMPT ---")
-	rl.writeln(indent(prompt, "  "))
-}
-
-// UserMessage logs the user's input message.
-func (rl *RunLog) UserMessage(msg string) {
-	rl.writeln("\n--- USER MESSAGE ---")
-	rl.writeln(indent(msg, "  "))
-}
-
 // Turn writes a turn header.
 func (rl *RunLog) Turn(n int) {
 	rl.writeln(fmt.Sprintf("\n--- TURN %d ---", n))
 }
 
-// AssistantText logs a final text response from the assistant.
-func (rl *RunLog) AssistantText(text string) {
-	rl.writeln("\n[ASSISTANT]")
-	rl.writeln(indent(text, "  "))
+// Request logs the full JSON payload sent to the LLM.
+func (rl *RunLog) Request(rawJSON []byte) {
+	rl.writeln("\n[REQUEST →]")
+	rl.writeln(indent(prettyJSONBytes(rawJSON), "  "))
 }
 
-// AssistantToolCalls writes the header for a turn where the assistant made tool calls,
-// optionally including any text content the assistant produced alongside the calls.
-func (rl *RunLog) AssistantToolCalls(textContent string) {
-	if strings.TrimSpace(textContent) != "" {
-		rl.writeln("\n[ASSISTANT - thinking]")
-		rl.writeln(indent(textContent, "  "))
-	}
-	rl.writeln("\n[ASSISTANT - tool calls]")
-}
-
-// ToolCall logs a single tool call (name + pretty-printed arguments).
-func (rl *RunLog) ToolCall(llmName string, rawArgs string) {
-	rl.writeln(fmt.Sprintf("\n  > %s", llmName))
-	prettyArgs := prettyJSON(rawArgs)
-	rl.writeln(indent(prettyArgs, "    "))
-}
-
-// ToolResult logs the content returned by a tool.
-func (rl *RunLog) ToolResult(llmName string, result string) {
-	rl.writeln(fmt.Sprintf("\n  [RESULT: %s]", llmName))
-	rl.writeln(indent(result, "    "))
-}
-
-// SubAgentCall logs when a sub-agent is invoked as a tool.
-func (rl *RunLog) SubAgentCall(agentName, message string) {
-	rl.writeln(fmt.Sprintf("\n  [SUB-AGENT: %s]", agentName))
-	rl.writeln(indent(message, "    "))
-}
-
-// SubAgentResult logs the response returned by a sub-agent.
-func (rl *RunLog) SubAgentResult(agentName, result string) {
-	rl.writeln(fmt.Sprintf("\n  [SUB-AGENT RESULT: %s]", agentName))
-	rl.writeln(indent(result, "    "))
+// Response logs the full JSON payload received from the LLM.
+func (rl *RunLog) Response(rawJSON []byte) {
+	rl.writeln("\n[← RESPONSE]")
+	rl.writeln(indent(prettyJSONBytes(rawJSON), "  "))
 }
 
 // Completed writes the run footer with timing and turn count.
@@ -223,18 +172,11 @@ func indent(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-// prettyJSON attempts to pretty-print raw JSON; falls back to the original string.
-func prettyJSON(raw string) string {
-	if raw == "" || raw == "{}" || raw == "null" {
-		return "(no arguments)"
+// prettyJSONBytes re-indents a JSON byte slice; falls back to the raw string on error.
+func prettyJSONBytes(b []byte) string {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, b, "", "  "); err != nil {
+		return string(b)
 	}
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return raw
-	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return raw
-	}
-	return string(b)
+	return buf.String()
 }
