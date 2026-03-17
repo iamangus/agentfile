@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -185,7 +186,7 @@ func (l *Loader) SaveRawDefinition(name string, data []byte) error {
 	return nil
 }
 
-// ListDefinitions returns all loaded definitions.
+// ListDefinitions returns all loaded definitions sorted alphabetically by name.
 func (l *Loader) ListDefinitions() []*Definition {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -193,6 +194,9 @@ func (l *Loader) ListDefinitions() []*Definition {
 	for _, def := range l.definitions {
 		defs = append(defs, def)
 	}
+	sort.Slice(defs, func(i, j int) bool {
+		return defs[i].Name < defs[j].Name
+	})
 	return defs
 }
 
