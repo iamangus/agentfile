@@ -148,8 +148,24 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 			}
 		}
 
-		choice := resp.Choices[0]
-		assistantMsg := choice.Message
+		// Merge all choices with index 0 into a single message.
+		// Some providers (e.g. claude-haiku via certain proxies) split the
+		// text content and tool_calls across two separate choice objects that
+		// both carry "index": 0, which is non-standard. Merging them here
+		// ensures tool_calls are never silently dropped.
+		var assistantMsg llm.Message
+		for _, c := range resp.Choices {
+			if c.Index != 0 {
+				continue
+			}
+			if assistantMsg.Role == "" {
+				assistantMsg.Role = c.Message.Role
+			}
+			if assistantMsg.Content == nil {
+				assistantMsg.Content = c.Message.Content
+			}
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, c.Message.ToolCalls...)
+		}
 
 		// Add assistant message to conversation
 		messages = append(messages, assistantMsg)
