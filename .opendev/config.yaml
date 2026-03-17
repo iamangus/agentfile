@@ -1,0 +1,7 @@
+# OpenDev configuration for this repository.
+# This file is read by code-mcp whenever a feature branch is created to
+# automatically register the test command — no agent involvement required.
+
+# The shell command used to run the full test suite.
+# Executed from the repository root directory.
+test_command: "go test ./..."
