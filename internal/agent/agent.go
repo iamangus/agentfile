@@ -62,11 +62,16 @@ func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput st
 // agent's static tool list for the duration of this run only.
 // It returns the final text response, the full updated message history, and any error.
 func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, userInput string, r Reporter, history []llm.Message, ephemeral ...*mcpclient.EphemeralConn) (string, []llm.Message, error) {
-	slog.Info("agent run started", "agent", def.Name, "input_len", len(userInput), "history_len", len(history))
 	report(r, "Thinking…")
 
 	// Build tool definitions for the LLM
 	toolDefs, toolMap := rt.buildToolSet(def, ephemeral)
+
+	toolNames := make([]string, len(toolDefs))
+	for i, td := range toolDefs {
+		toolNames[i] = td.Function.Name
+	}
+	slog.Info("agent run started", "agent", def.Name, "tools", toolNames, "input_len", len(userInput), "history_len", len(history))
 
 	// Initialize conversation: system prompt + prior history + new user message
 	messages := make([]llm.Message, 0, 2+len(history))
