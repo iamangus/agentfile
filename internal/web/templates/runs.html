@@ -68,6 +68,155 @@
     .tool-call-success { border-left: 3px solid hsl(142 76% 36%); }
     .tool-call-error { border-left: 3px solid hsl(var(--destructive)); }
 
+    .view-toggle {
+      display: inline-flex;
+      background: hsl(var(--muted) / 0.3);
+      border-radius: 6px;
+      padding: 2px;
+      font-size: 12px;
+    }
+    .view-toggle-btn {
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: hsl(var(--muted-foreground));
+      transition: all 0.15s;
+    }
+    .view-toggle-btn:hover { color: hsl(var(--foreground)); }
+    .view-toggle-btn.active {
+      background: hsl(var(--background));
+      color: hsl(var(--foreground));
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+
+    .conversation-view { display: block; }
+    .json-view { display: none; }
+    body.view-json .conversation-view { display: none; }
+    body.view-json .json-view { display: block; }
+
+    .conv-turn {
+      border: 1px solid hsl(var(--border));
+      border-radius: 8px;
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    .conv-turn-header {
+      background: hsl(var(--muted) / 0.3);
+      padding: 8px 12px;
+      font-weight: 500;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .conv-turn-body {
+      padding: 12px;
+    }
+
+    .conv-message {
+      margin-bottom: 12px;
+    }
+    .conv-message:last-child {
+      margin-bottom: 0;
+    }
+    .conv-message-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: hsl(var(--muted-foreground));
+      margin-bottom: 4px;
+    }
+    .conv-message-content {
+      background: hsl(var(--muted) / 0.2);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .conv-message-content.user {
+      background: hsl(var(--primary) / 0.1);
+    }
+
+    .conv-tool-call {
+      background: hsl(var(--background));
+      border: 1px solid hsl(var(--border));
+      border-radius: 6px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+    .conv-tool-call:last-child {
+      margin-bottom: 0;
+    }
+    .conv-tool-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: hsl(var(--muted) / 0.2);
+      cursor: pointer;
+    }
+    .conv-tool-header:hover {
+      background: hsl(var(--muted) / 0.4);
+    }
+    .conv-tool-name {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .conv-tool-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .conv-tool-body {
+      padding: 10px 12px;
+      display: none;
+    }
+    .conv-tool-call.open .conv-tool-body {
+      display: block;
+    }
+    .conv-tool-call.open .conv-tool-chevron {
+      transform: rotate(90deg);
+    }
+    .conv-tool-chevron {
+      transition: transform 0.2s;
+    }
+
+    .conv-tool-args, .conv-tool-result {
+      margin-bottom: 8px;
+    }
+    .conv-tool-args:last-child, .conv-tool-result:last-child {
+      margin-bottom: 0;
+    }
+    .conv-tool-section-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: hsl(var(--muted-foreground));
+      margin-bottom: 4px;
+    }
+    .conv-tool-section-content {
+      background: hsl(var(--muted) / 0.2);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .conv-tool-section-content.truncated {
+      position: relative;
+    }
+    .conv-tool-section-content.truncated::after {
+      content: '... (truncated)';
+      color: hsl(var(--muted-foreground));
+      font-style: italic;
+    }
+
     .json-tree-container {
       background: hsl(var(--muted) / 0.3);
       border-radius: 6px;
@@ -92,77 +241,19 @@
       height: 16px;
       margin-right: 2px;
       border-radius: 3px;
-      transition: transform 0.15s;
     }
     .json-tree-container .jv-toggle:hover { background: hsl(var(--muted)); }
     .json-tree-container .jv-toggle::before {
       content: '▶';
       font-size: 10px;
-      transition: transform 0.15s;
     }
     .json-tree-container .jv-toggle.jv-open::before {
-      transform: rotate(90deg);
+      content: '▼';
     }
     .json-tree-container .jv-children {
       padding-left: 18px;
     }
     .json-tree-container .jv-item { margin: 2px 0; }
-
-    .json-block {
-      background: hsl(var(--muted) / 0.3);
-      border-radius: 6px;
-      padding: 10px 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 12px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-      max-height: 300px;
-      overflow-y: auto;
-    }
-    .json-tree-container .jv-key { color: hsl(var(--foreground)); }
-    .json-tree-container .jv-string { color: hsl(150 60% 45%); }
-    .json-tree-container .jv-number { color: hsl(200 80% 50%); }
-    .json-tree-container .jv-boolean { color: hsl(280 70% 60%); }
-    .json-tree-container .jv-null { color: hsl(var(--muted-foreground)); }
-    .json-tree-container .jv-toggle {
-      cursor: pointer;
-      user-select: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 16px;
-      height: 16px;
-      margin-right: 2px;
-      border-radius: 3px;
-      transition: transform 0.15s;
-    }
-    .json-tree-container .jv-toggle:hover { background: hsl(var(--muted)); }
-    .json-tree-container .jv-toggle::before {
-      content: '▶';
-      font-size: 10px;
-      transition: transform 0.15s;
-    }
-    .json-tree-container .jv-toggle.jv-open::before {
-      transform: rotate(90deg);
-    }
-    .json-tree-container .jv-children {
-      padding-left: 18px;
-    }
-    .json-tree-container .jv-item { margin: 2px 0; }
-
-    .json-block {
-      background: hsl(var(--muted) / 0.3);
-      border-radius: 6px;
-      padding: 10px 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 12px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-      max-height: 300px;
-      overflow-y: auto;
-    }
 
     .turn-card {
       border: 1px solid hsl(var(--border));
@@ -237,7 +328,6 @@
 {{template "navbar" .}}
 
 <div class="page-body">
-  <!-- Sidebar: Runs List -->
   <aside class="sidebar bg-background">
     <div class="sidebar-content">
       <div class="filter-bar">
@@ -262,7 +352,6 @@
     </div>
   </aside>
 
-  <!-- Main: Run Detail -->
   <main class="main-content">
     {{if .Run}}
     {{template "run-detail-content" .}}
@@ -276,7 +365,7 @@
   </main>
 </div>
 
-{{template "json-tree-script" .}}
+{{template "conversation-script" .}}
 </body>
 </html>
 {{end}}
@@ -307,12 +396,18 @@
 <div class="p-6">
   <div id="run-{{.Run.ID}}" {{if eq .Run.Status "running"}}hx-ext="sse" sse-connect="/runs/{{.Run.ID}}/events" sse-swap="update" hx-swap="outerHTML"{{end}}>
     <!-- Header -->
-    <div class="mb-6">
-      <div class="flex items-center gap-3 mb-2">
-        <span class="uk-badge" style="border-radius: 6px; padding: 4px 10px; font-size: 12px;">{{.Run.Agent}}</span>
-        <span class="status-badge status-{{.Run.Status}}">{{.Run.Status}}</span>
+    <div class="mb-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="uk-badge" style="border-radius: 6px; padding: 4px 10px; font-size: 12px;">{{.Run.Agent}}</span>
+          <span class="status-badge status-{{.Run.Status}}">{{.Run.Status}}</span>
+        </div>
+        <div class="view-toggle">
+          <button class="view-toggle-btn active" data-view="conversation">Conversation</button>
+          <button class="view-toggle-btn" data-view="json">Full JSON</button>
+        </div>
       </div>
-      <div class="text-xs text-muted-foreground">
+      <div class="text-xs text-muted-foreground mt-2">
         ID: <code class="bg-muted px-1 rounded text-xs">{{.Run.ID}}</code>
         <span class="mx-2">|</span>
         Model: <span>{{.Run.Model}}</span>
@@ -352,9 +447,29 @@
     </div>
     {{end}}
 
-    <!-- Turns -->
-    {{if .Run.Turns}}
-    <div class="mb-6">
+    <!-- Conversation View -->
+    <div class="conversation-view mb-6">
+      {{if .Run.Turns}}
+      <h3 class="text-sm font-semibold mb-3 text-muted-foreground uppercase tracking-wide">
+        Conversation ({{len .Run.Turns}} turns)
+      </h3>
+      {{range $i, $turn := .Run.Turns}}
+      <div class="conv-turn" data-turn="{{$turn.TurnNumber}}" data-request="{{$turn.Request}}" data-response="{{$turn.Response}}">
+        <div class="conv-turn-header">
+          <span>Turn {{$turn.TurnNumber}}</span>
+          <span class="text-xs text-muted-foreground">{{$turn.Duration}}</span>
+        </div>
+        <div class="conv-turn-body">
+          <!-- Content will be populated by JavaScript -->
+        </div>
+      </div>
+      {{end}}
+      {{end}}
+    </div>
+
+    <!-- JSON View -->
+    <div class="json-view mb-6">
+      {{if .Run.Turns}}
       <h3 class="text-sm font-semibold mb-3 text-muted-foreground uppercase tracking-wide">
         Turns ({{len .Run.Turns}})
       </h3>
@@ -365,7 +480,6 @@
           <span class="text-xs text-muted-foreground">{{$turn.Duration}}</span>
         </div>
         <div class="turn-content">
-          <!-- Request -->
           {{if $turn.Request}}
           <div class="mb-3 collapsible" onclick="this.classList.toggle('open')">
             <div class="collapsible-header">
@@ -380,7 +494,6 @@
           </div>
           {{end}}
 
-          <!-- Response -->
           {{if $turn.Response}}
           <div class="mb-3 collapsible" onclick="this.classList.toggle('open')">
             <div class="collapsible-header">
@@ -395,7 +508,6 @@
           </div>
           {{end}}
 
-          <!-- Tool Calls -->
           {{if $turn.ToolCalls}}
           <div>
             <h4 class="text-xs font-semibold text-muted-foreground mb-2">TOOL CALLS ({{len $turn.ToolCalls}})</h4>
@@ -449,8 +561,8 @@
         </div>
       </div>
       {{end}}
+      {{end}}
     </div>
-    {{end}}
 
     <!-- Final Response -->
     {{if .Run.Response}}
@@ -471,9 +583,133 @@
 </div>
 {{end}}
 
-{{define "json-tree-script"}}
+{{define "conversation-script"}}
 <script>
 (function() {
+  function truncate(str, max) {
+    if (!str) return '';
+    if (str.length <= max) return str;
+    return str.substring(0, max);
+  }
+
+  function extractAssistantContent(responseJson) {
+    try {
+      var resp = JSON.parse(responseJson);
+      if (resp.choices && resp.choices[0] && resp.choices[0].message) {
+        var content = resp.choices[0].message.content;
+        if (content && typeof content === 'string') {
+          return content;
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function extractToolCalls(responseJson) {
+    try {
+      var resp = JSON.parse(responseJson);
+      if (resp.choices && resp.choices[0] && resp.choices[0].message && resp.choices[0].message.tool_calls) {
+        return resp.choices[0].message.tool_calls;
+      }
+    } catch (e) {}
+    return [];
+  }
+
+  function formatToolArgs(argsStr) {
+    if (!argsStr) return '';
+    try {
+      var args = JSON.parse(argsStr);
+      var parts = [];
+      var priorityKeys = ['query', 'url', 'path', 'message', 'name', 'file', 'command'];
+      
+      for (var i = 0; i < priorityKeys.length; i++) {
+        var key = priorityKeys[i];
+        if (args[key] !== undefined) {
+          parts.push(key + ': ' + JSON.stringify(args[key]));
+        }
+      }
+      
+      var remaining = Object.keys(args).filter(function(k) {
+        return priorityKeys.indexOf(k) === -1;
+      });
+      for (var i = 0; i < remaining.length; i++) {
+        var key = remaining[i];
+        var val = args[key];
+        if (typeof val === 'string' && val.length > 100) {
+          val = val.substring(0, 100) + '...';
+        } else {
+          val = JSON.stringify(val);
+        }
+        parts.push(key + ': ' + val);
+      }
+      
+      return parts.join('\n');
+    } catch (e) {
+      return argsStr;
+    }
+  }
+
+  function renderConversationView(turnEl) {
+    var requestJson = turnEl.dataset.request;
+    var responseJson = turnEl.dataset.response;
+    var body = turnEl.querySelector('.conv-turn-body');
+    if (!body) return;
+
+    var html = '';
+
+    var assistantContent = extractAssistantContent(responseJson);
+    if (assistantContent) {
+      html += '<div class="conv-message">';
+      html += '<div class="conv-message-label">🤖 Assistant</div>';
+      html += '<div class="conv-message-content">' + escapeHtml(assistantContent) + '</div>';
+      html += '</div>';
+    }
+
+    var toolCalls = extractToolCalls(responseJson);
+    if (toolCalls.length > 0) {
+      html += '<div class="conv-message">';
+      html += '<div class="conv-message-label">🔧 Tool Calls (' + toolCalls.length + ')</div>';
+      
+      for (var i = 0; i < toolCalls.length; i++) {
+        var tc = toolCalls[i];
+        var func = tc.function || {};
+        var name = func.name || 'unknown';
+        var args = func.arguments || '{}';
+        
+        html += '<div class="conv-tool-call" onclick="this.classList.toggle(\'open\')">';
+        html += '<div class="conv-tool-header">';
+        html += '<span class="conv-tool-name">' + escapeHtml(name) + '</span>';
+        html += '<div class="conv-tool-meta">';
+        html += '<svg class="conv-tool-chevron w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">';
+        html += '<polyline points="9 18 15 12 9 6"></polyline>';
+        html += '</svg>';
+        html += '</div></div>';
+        html += '<div class="conv-tool-body">';
+        
+        html += '<div class="conv-tool-args">';
+        html += '<div class="conv-tool-section-label">Arguments</div>';
+        html += '<div class="conv-tool-section-content">' + escapeHtml(formatToolArgs(args)) + '</div>';
+        html += '</div>';
+        
+        html += '</div></div>';
+      }
+      
+      html += '</div>';
+    }
+
+    body.innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   function renderJsonTree(container, data, depth) {
     depth = depth || 0;
     if (depth > 50) return document.createTextNode('...');
@@ -505,9 +741,7 @@
     }
     if (Array.isArray(data)) {
       if (data.length === 0) {
-        var span = document.createElement('span');
-        span.textContent = '[]';
-        return span;
+        return document.createTextNode('[]');
       }
       var wrapper = document.createElement('div');
       wrapper.className = 'jv-item';
@@ -517,12 +751,8 @@
       data.forEach(function(item, i) {
         var child = document.createElement('div');
         child.className = 'jv-item';
-        var idx = document.createElement('span');
-        idx.textContent = i + ': ';
-        idx.style.color = 'hsl(var(--muted-foreground))';
-        child.appendChild(idx);
+        child.appendChild(document.createTextNode(i + ': '));
         child.appendChild(renderJsonTree(container, item, depth + 1));
-        if (i < data.length - 1) child.appendChild(document.createTextNode(','));
         children.appendChild(child);
       });
 
@@ -534,27 +764,22 @@
         children.style.display = children.style.display === 'none' ? 'block' : 'none';
       };
 
-      var label = document.createElement('span');
-      label.textContent = 'Array[' + data.length + ']';
-
       wrapper.appendChild(toggle);
-      wrapper.appendChild(label);
+      wrapper.appendChild(document.createTextNode('[' + data.length + ' items]'));
       wrapper.appendChild(children);
       return wrapper;
     }
     if (type === 'object') {
       var keys = Object.keys(data);
       if (keys.length === 0) {
-        var span = document.createElement('span');
-        span.textContent = '{}';
-        return span;
+        return document.createTextNode('{}');
       }
       var wrapper = document.createElement('div');
       wrapper.className = 'jv-item';
 
       var children = document.createElement('div');
       children.className = 'jv-children';
-      keys.forEach(function(key, i) {
+      keys.forEach(function(key) {
         var child = document.createElement('div');
         child.className = 'jv-item';
         var keySpan = document.createElement('span');
@@ -562,7 +787,6 @@
         keySpan.textContent = key + ': ';
         child.appendChild(keySpan);
         child.appendChild(renderJsonTree(container, data[key], depth + 1));
-        if (i < keys.length - 1) child.appendChild(document.createTextNode(','));
         children.appendChild(child);
       });
 
@@ -574,11 +798,8 @@
         children.style.display = children.style.display === 'none' ? 'block' : 'none';
       };
 
-      var label = document.createElement('span');
-      label.textContent = 'Object{' + keys.length + '}';
-
       wrapper.appendChild(toggle);
-      wrapper.appendChild(label);
+      wrapper.appendChild(document.createTextNode('{' + keys.length + ' keys}'));
       wrapper.appendChild(children);
       return wrapper;
     }
@@ -599,13 +820,49 @@
     });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initJsonTrees);
-  } else {
+  function initConversationViews() {
+    document.querySelectorAll('.conv-turn[data-request], .conv-turn[data-response]').forEach(function(turnEl) {
+      if (turnEl.dataset.initialized) return;
+      turnEl.dataset.initialized = 'true';
+      renderConversationView(turnEl);
+    });
+  }
+
+  function initViewToggle() {
+    document.querySelectorAll('.view-toggle-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var view = this.dataset.view;
+        
+        document.querySelectorAll('.view-toggle-btn').forEach(function(b) {
+          b.classList.remove('active');
+        });
+        this.classList.add('active');
+        
+        if (view === 'json') {
+          document.body.classList.add('view-json');
+          document.body.classList.remove('view-conversation');
+          initJsonTrees();
+        } else {
+          document.body.classList.remove('view-json');
+          document.body.classList.add('view-conversation');
+        }
+      });
+    });
+  }
+
+  function init() {
+    initViewToggle();
+    initConversationViews();
     initJsonTrees();
   }
 
-  document.body.addEventListener('htmx:afterSwap', initJsonTrees);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+  document.body.addEventListener('htmx:afterSwap', init);
 })();
 </script>
 {{end}}
