@@ -86,6 +86,9 @@ func main() {
 		slog.Info("run logging enabled", "dir", "logs")
 	}
 
+	// Create run history manager for tracking API-initiated runs
+	historyManager := api.NewHistoryManager()
+
 	// Set up HTTP mux
 	mux := http.NewServeMux()
 
@@ -105,11 +108,11 @@ func main() {
 	})
 
 	// REST API for agents and status
-	apiHandler := api.NewHandler(reg, pool, loader, agentRuntime)
+	apiHandler := api.NewHandler(reg, pool, loader, agentRuntime, historyManager)
 	apiHandler.RegisterRoutes(mux)
 
-	// Web UI (chat + agents pages)
-	webHandler, err := web.NewHandler(loader, agentRuntime, pool)
+	// Web UI (chat + agents + runs pages)
+	webHandler, err := web.NewHandler(loader, agentRuntime, pool, historyManager)
 	if err != nil {
 		slog.Error("failed to create web UI handler", "error", err)
 		os.Exit(1)

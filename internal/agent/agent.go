@@ -28,6 +28,26 @@ type Reporter interface {
 	Update(status string)
 }
 
+// HistoryRecorder captures detailed execution history during an agent run.
+// Implementations must be safe for concurrent use.
+// A nil HistoryRecorder is valid and silently drops all events.
+type HistoryRecorder interface {
+	StartTurn(turnNum int)
+	RecordRequest(requestJSON string)
+	RecordResponse(responseJSON string)
+	EndTurn()
+	StartToolCall(toolCallID, toolName, arguments string)
+	EndToolCall(result string, status ToolCallStatus, errMsg string)
+}
+
+// ToolCallStatus represents the outcome of a tool call.
+type ToolCallStatus string
+
+const (
+	ToolCallStatusSuccess ToolCallStatus = "success"
+	ToolCallStatusError   ToolCallStatus = "error"
+)
+
 // Runtime manages agent execution.
 type Runtime struct {
 	resolver  AgentResolver
@@ -51,6 +71,16 @@ func (rt *Runtime) SetLogger(l *agentlog.Logger) {
 	rt.logger = l
 }
 
+// GetToolNames returns the list of tool names that an agent will have access to.
+func (rt *Runtime) GetToolNames(def *config.Definition, ephemeral []*mcpclient.EphemeralConn) []string {
+	toolDefs, _ := rt.buildToolSet(def, ephemeral)
+	names := make([]string, len(toolDefs))
+	for i, td := range toolDefs {
+		names[i] = td.Function.Name
+	}
+	return names
+}
+
 // report sends a status update if r is non-nil.
 func report(r Reporter, status string) {
 	if r != nil {
@@ -71,6 +101,11 @@ func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput st
 // agent's static tool list for the duration of this run only.
 // It returns the final text response, the full updated message history, and any error.
 func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, userInput string, r Reporter, history []llm.Message, ephemeral ...*mcpclient.EphemeralConn) (string, []llm.Message, error) {
+	return rt.RunWithHistory(ctx, def, userInput, r, nil, history, ephemeral...)
+}
+
+// RunWithHistory is like RunWithReporter but also records detailed execution history.
+func (rt *Runtime) RunWithHistory(ctx context.Context, def *config.Definition, userInput string, r Reporter, hr HistoryRecorder, history []llm.Message, ephemeral ...*mcpclient.EphemeralConn) (string, []llm.Message, error) {
 	report(r, "Thinking…")
 
 	// Build tool definitions for the LLM
@@ -109,6 +144,9 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 		if rl != nil {
 			rl.Turn(turn + 1)
 		}
+		if hr != nil {
+			hr.StartTurn(turn + 1)
+		}
 
 		req := &llm.ChatRequest{
 			Model:    def.Model,
@@ -119,9 +157,17 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 		}
 
 		// Log the exact JSON being sent to the LLM
-		if rl != nil {
-			if reqJSON, err := json.MarshalIndent(req, "", "  "); err == nil {
-				rl.Request(reqJSON)
+		var reqJSON []byte
+		if rl != nil || hr != nil {
+			var err error
+			reqJSON, err = json.MarshalIndent(req, "", "  ")
+			if err == nil {
+				if rl != nil {
+					rl.Request(reqJSON)
+				}
+				if hr != nil {
+					hr.RecordRequest(string(reqJSON))
+				}
 			}
 		}
 
@@ -143,9 +189,14 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 		}
 
 		// Log the exact JSON received from the LLM
-		if rl != nil {
+		if rl != nil || hr != nil {
 			if respJSON, err := json.MarshalIndent(resp, "", "  "); err == nil {
-				rl.Response(respJSON)
+				if rl != nil {
+					rl.Response(respJSON)
+				}
+				if hr != nil {
+					hr.RecordResponse(string(respJSON))
+				}
 			}
 		}
 
@@ -178,6 +229,9 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 			if rl != nil {
 				rl.Completed(turn + 1)
 			}
+			if hr != nil {
+				hr.EndTurn()
+			}
 			// Return history excluding the system prompt so it can be replayed next turn.
 			// Slice off the leading system message: messages[1:] = history + new user msg + assistant reply.
 			return content, messages[1:], nil
@@ -188,6 +242,7 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 		type toolResult struct {
 			toolCallID string
 			content    string
+			err        error
 		}
 
 		results := make([]toolResult, len(assistantMsg.ToolCalls))
@@ -209,10 +264,28 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 					defer func() { <-sem }()
 				}
 				report(r, toolStatus(tc.Function.Name, toolMap))
+
+				// Record tool call start
+				if hr != nil {
+					hr.StartToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+				}
+
 				result, err := rt.executeTool(ctx, tc, toolMap, r)
+
+				// Record tool call end
+				if hr != nil {
+					var status ToolCallStatus = ToolCallStatusSuccess
+					var errMsg string
+					if err != nil {
+						status = ToolCallStatusError
+						errMsg = err.Error()
+					}
+					hr.EndToolCall(result, status, errMsg)
+				}
+
 				if err != nil {
 					slog.Warn("tool call failed", "agent", def.Name, "tool", tc.Function.Name, "error", err)
-					results[i] = toolResult{toolCallID: tc.ID, content: fmt.Sprintf("Error: %s", err.Error())}
+					results[i] = toolResult{toolCallID: tc.ID, content: fmt.Sprintf("Error: %s", err.Error()), err: err}
 				} else {
 					results[i] = toolResult{toolCallID: tc.ID, content: result}
 				}
@@ -228,6 +301,9 @@ func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, 
 			})
 		}
 
+		if hr != nil {
+			hr.EndTurn()
+		}
 		report(r, "Thinking…")
 	}
 

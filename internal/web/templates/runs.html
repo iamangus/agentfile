@@ -1,0 +1,388 @@
+{{define "runs.html"}}<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Runs — agentfile</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/franken-ui@2.1.0/dist/css/core.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/franken-ui@2.1.0/dist/css/utilities.min.css" />
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script src="https://unpkg.com/htmx-ext-sse@2.2.3/sse.js" defer></script>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    .page-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      height: calc(100vh - 52px);
+    }
+    .sidebar {
+      width: 300px;
+      min-width: 300px;
+      overflow: hidden;
+      border-right: 1px solid hsl(var(--border));
+    }
+    .sidebar-content {
+      height: 100%;
+      overflow-y: auto;
+    }
+    .main-content {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .run-row {
+      display: flex;
+      flex-direction: column;
+      padding: 10px 12px;
+      border-bottom: 1px solid hsl(var(--border) / 0.5);
+      cursor: pointer;
+      text-decoration: none;
+      color: inherit;
+      transition: background 0.15s;
+    }
+    .run-row:hover { background: hsl(var(--muted) / 0.4); }
+    .run-row.active { background: hsl(var(--muted) / 0.7); }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+    .status-queued { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+    .status-running { background: hsl(var(--primary) / 0.2); color: hsl(var(--primary)); animation: pulse 2s infinite; }
+    .status-completed { background: hsl(142 76% 36% / 0.2); color: hsl(142 76% 36%); }
+    .status-failed { background: hsl(var(--destructive) / 0.2); color: hsl(var(--destructive)); }
+    .status-canceled { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    .tool-call-success { border-left: 3px solid hsl(142 76% 36%); }
+    .tool-call-error { border-left: 3px solid hsl(var(--destructive)); }
+
+    .json-block {
+      background: hsl(var(--muted) / 0.3);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .turn-card {
+      border: 1px solid hsl(var(--border));
+      border-radius: 8px;
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    .turn-header {
+      background: hsl(var(--muted) / 0.3);
+      padding: 8px 12px;
+      font-weight: 500;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .turn-content {
+      padding: 12px;
+    }
+
+    .tool-call-card {
+      background: hsl(var(--background));
+      border-radius: 6px;
+      margin-top: 8px;
+      padding: 10px 12px;
+    }
+
+    .collapsible-header {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+    }
+    .collapsible-header:hover { color: hsl(var(--primary)); }
+    .collapsible-content {
+      display: none;
+      margin-top: 8px;
+    }
+    .collapsible.open .collapsible-content { display: block; }
+    .collapsible .chevron { transition: transform 0.2s; }
+    .collapsible.open .chevron { transform: rotate(90deg); }
+
+    .filter-bar {
+      padding: 12px;
+      border-bottom: 1px solid hsl(var(--border));
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .filter-select {
+      background: hsl(var(--background));
+      border: 1px solid hsl(var(--border));
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: hsl(var(--foreground));
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: hsl(var(--muted-foreground));
+    }
+  </style>
+</head>
+<body class="bg-background text-foreground flex flex-col min-h-screen">
+
+{{template "navbar" .}}
+
+<div class="page-body">
+  <!-- Sidebar: Runs List -->
+  <aside class="sidebar bg-background">
+    <div class="sidebar-content">
+      <div class="filter-bar">
+        <select name="agent" class="filter-select" hx-get="/runs/list" hx-target="#runs-list" hx-trigger="change" hx-include="[name='status']">
+          <option value="">All Agents</option>
+          {{range .Agents}}
+          <option value="{{.}}" {{if eq $.AgentFilter .}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+        <select name="status" class="filter-select" hx-get="/runs/list" hx-target="#runs-list" hx-trigger="change" hx-include="[name='agent']">
+          <option value="">All Status</option>
+          <option value="queued" {{if eq .StatusFilter "queued"}}selected{{end}}>Queued</option>
+          <option value="running" {{if eq .StatusFilter "running"}}selected{{end}}>Running</option>
+          <option value="completed" {{if eq .StatusFilter "completed"}}selected{{end}}>Completed</option>
+          <option value="failed" {{if eq .StatusFilter "failed"}}selected{{end}}>Failed</option>
+          <option value="canceled" {{if eq .StatusFilter "canceled"}}selected{{end}}>Canceled</option>
+        </select>
+      </div>
+      <div id="runs-list">
+        {{template "runs-list" .}}
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main: Run Detail -->
+  <main class="main-content">
+    {{if .Run}}
+    {{template "run-detail-content" .}}
+    {{else}}
+    <div class="empty-state">
+      <div class="text-muted-foreground/30 text-5xl mb-4">📋</div>
+      <p class="text-sm font-medium text-foreground mb-1">No run selected</p>
+      <p class="text-xs text-muted-foreground">Select a run from the list to view details</p>
+    </div>
+    {{end}}
+  </main>
+</div>
+
+</body>
+</html>
+{{end}}
+
+{{define "runs-list"}}
+{{range .Runs}}
+<a href="/runs/{{.ID}}" hx-get="/runs/{{.ID}}" hx-target=".main-content" hx-push-url="true" class="run-row {{if eq $.Run.ID .ID}}active{{end}}">
+  <div class="flex items-center justify-between mb-1">
+    <span class="font-medium text-sm">{{.Agent}}</span>
+    <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+  </div>
+  <div class="text-xs text-muted-foreground mb-1">{{truncate .UserInput 60}}</div>
+  <div class="flex items-center justify-between text-xs text-muted-foreground">
+    <span>{{.CreatedAt.Format "Jan 2 15:04"}}</span>
+    {{if .TotalDuration}}
+    <span>{{.TotalDuration}}</span>
+    {{end}}
+  </div>
+</a>
+{{else}}
+<div class="px-4 py-8 text-center">
+  <p class="text-xs text-muted-foreground">No runs found</p>
+</div>
+{{end}}
+{{end}}
+
+{{define "run-detail-content"}}
+<div class="p-6">
+  <div id="run-{{.Run.ID}}" {{if eq .Run.Status "running"}}hx-ext="sse" sse-connect="/runs/{{.Run.ID}}/events" sse-swap="update" hx-swap="outerHTML"{{end}}>
+    <!-- Header -->
+    <div class="mb-6">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="uk-badge" style="border-radius: 6px; padding: 4px 10px; font-size: 12px;">{{.Run.Agent}}</span>
+        <span class="status-badge status-{{.Run.Status}}">{{.Run.Status}}</span>
+      </div>
+      <div class="text-xs text-muted-foreground">
+        ID: <code class="bg-muted px-1 rounded text-xs">{{.Run.ID}}</code>
+        <span class="mx-2">|</span>
+        Model: <span>{{.Run.Model}}</span>
+        <span class="mx-2">|</span>
+        Started: <span>{{.Run.CreatedAt.Format "Jan 2 15:04:05"}}</span>
+        {{if .Run.TotalDuration}}
+        <span class="mx-2">|</span>
+        Duration: <span>{{.Run.TotalDuration}}</span>
+        {{end}}
+      </div>
+    </div>
+
+    <!-- User Input -->
+    <div class="mb-6">
+      <h3 class="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">User Input</h3>
+      <div class="bg-muted/30 rounded-lg p-4 text-sm">{{.Run.UserInput}}</div>
+    </div>
+
+    <!-- Available Tools -->
+    {{if .Run.AvailableTools}}
+    <div class="mb-6 collapsible" onclick="this.classList.toggle('open')">
+      <div class="collapsible-header">
+        <svg class="chevron w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+        <h3 class="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          Available Tools ({{len .Run.AvailableTools}})
+        </h3>
+      </div>
+      <div class="collapsible-content">
+        <div class="flex flex-wrap gap-2 mt-2">
+          {{range .Run.AvailableTools}}
+          <span class="bg-muted px-2 py-1 rounded text-xs font-mono">{{.}}</span>
+          {{end}}
+        </div>
+      </div>
+    </div>
+    {{end}}
+
+    <!-- Turns -->
+    {{if .Run.Turns}}
+    <div class="mb-6">
+      <h3 class="text-sm font-semibold mb-3 text-muted-foreground uppercase tracking-wide">
+        Turns ({{len .Run.Turns}})
+      </h3>
+      {{range $i, $turn := .Run.Turns}}
+      <div class="turn-card">
+        <div class="turn-header">
+          <span>Turn {{$turn.TurnNumber}}</span>
+          <span class="text-xs text-muted-foreground">{{$turn.Duration}}</span>
+        </div>
+        <div class="turn-content">
+          <!-- Request -->
+          {{if $turn.Request}}
+          <div class="mb-3 collapsible" onclick="this.classList.toggle('open')">
+            <div class="collapsible-header">
+              <svg class="chevron w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+              <span class="text-xs font-semibold text-muted-foreground">REQUEST →</span>
+            </div>
+            <div class="collapsible-content">
+              <div class="json-block">{{$turn.Request}}</div>
+            </div>
+          </div>
+          {{end}}
+
+          <!-- Response -->
+          {{if $turn.Response}}
+          <div class="mb-3 collapsible" onclick="this.classList.toggle('open')">
+            <div class="collapsible-header">
+              <svg class="chevron w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+              <span class="text-xs font-semibold text-muted-foreground">← RESPONSE</span>
+            </div>
+            <div class="collapsible-content">
+              <div class="json-block">{{$turn.Response}}</div>
+            </div>
+          </div>
+          {{end}}
+
+          <!-- Tool Calls -->
+          {{if $turn.ToolCalls}}
+          <div>
+            <h4 class="text-xs font-semibold text-muted-foreground mb-2">TOOL CALLS ({{len $turn.ToolCalls}})</h4>
+            {{range $turn.ToolCalls}}
+            <div class="tool-call-card {{if eq .Status "success"}}tool-call-success{{else}}tool-call-error{{end}}">
+              <div class="flex items-center justify-between mb-2">
+                <code class="text-sm font-semibold">{{.Name}}</code>
+                <div class="flex items-center gap-2">
+                  <span class="status-badge status-{{.Status}} text-xs">{{.Status}}</span>
+                  <span class="text-xs text-muted-foreground">{{.Duration}}</span>
+                </div>
+              </div>
+
+              {{if .Arguments}}
+              <div class="collapsible" onclick="this.classList.toggle('open')">
+                <div class="collapsible-header text-xs text-muted-foreground">
+                  <svg class="chevron w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                  Arguments
+                </div>
+                <div class="collapsible-content">
+                  <div class="json-block text-xs">{{.Arguments}}</div>
+                </div>
+              </div>
+              {{end}}
+
+              {{if .Result}}
+              <div class="collapsible mt-2" onclick="this.classList.toggle('open')">
+                <div class="collapsible-header text-xs text-muted-foreground">
+                  <svg class="chevron w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                  Result
+                </div>
+                <div class="collapsible-content">
+                  <div class="json-block text-xs">{{truncate .Result 5000}}</div>
+                </div>
+              </div>
+              {{end}}
+
+              {{if .Error}}
+              <div class="mt-2 text-xs text-destructive bg-destructive/10 rounded p-2">
+                <strong>Error:</strong> {{.Error}}
+              </div>
+              {{end}}
+            </div>
+            {{end}}
+          </div>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+
+    <!-- Final Response -->
+    {{if .Run.Response}}
+    <div class="mb-6">
+      <h3 class="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Final Response</h3>
+      <div class="bg-primary/10 border border-primary/20 rounded-lg p-4 text-sm">{{.Run.Response}}</div>
+    </div>
+    {{end}}
+
+    <!-- Error -->
+    {{if .Run.Error}}
+    <div class="mb-6">
+      <h3 class="text-sm font-semibold mb-2 text-destructive uppercase tracking-wide">Error</h3>
+      <div class="bg-destructive/10 border border-destructive/20 rounded-lg p-4 text-sm text-destructive">{{.Run.Error}}</div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

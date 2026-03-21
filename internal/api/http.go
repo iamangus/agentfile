@@ -33,16 +33,18 @@ type Handler struct {
 	pool         *mcpclient.Pool
 	agentRuntime *agent.Runtime
 	runs         *RunManager
+	history      *HistoryManager
 }
 
 // NewHandler creates a new API handler.
-func NewHandler(reg *registry.Registry, pool *mcpclient.Pool, store DefinitionStore, agentRuntime *agent.Runtime) *Handler {
+func NewHandler(reg *registry.Registry, pool *mcpclient.Pool, store DefinitionStore, agentRuntime *agent.Runtime, history *HistoryManager) *Handler {
 	return &Handler{
 		store:        store,
 		reg:          reg,
 		pool:         pool,
 		agentRuntime: agentRuntime,
 		runs:         NewRunManager(),
+		history:      history,
 	}
 }
 
@@ -55,7 +57,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/agents/{name}", h.updateAgentRaw)
 	mux.HandleFunc("DELETE /api/v1/agents/{name}", h.deleteAgent)
 	mux.HandleFunc("POST /api/v1/agents/{name}/run", h.runAgent)
+	mux.HandleFunc("GET /api/v1/runs", h.listRuns)
 	mux.HandleFunc("GET /api/v1/runs/{id}", h.getRun)
+	mux.HandleFunc("GET /api/v1/runs/{id}/history", h.getRunHistory)
 	mux.HandleFunc("POST /api/v1/runs/{id}/cancel", h.cancelRun)
 	mux.HandleFunc("GET /api/v1/tools", h.listTools)
 	mux.HandleFunc("GET /api/v1/status", h.getStatus)
@@ -184,9 +188,13 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 	runID := uuid.New().String()
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Build tool list for history
+	toolNames := h.agentRuntime.GetToolNames(def, nil)
+
 	// Register the run before starting the goroutine so it is immediately
 	// visible to any polling callers.
 	h.runs.Create(runID, name, cancel)
+	h.history.Create(runID, name, def.Model, req.Message, toolNames, cancel)
 
 	// Connect any ephemeral MCP servers provided in the request.
 	// They are closed once the run goroutine exits, regardless of outcome.
@@ -199,10 +207,12 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 			for _, c := range ephemeral {
 				c.Close()
 			}
-			// Remove the run we already registered since we're failing early.
-			h.runs.SetFailed(runID, "failed to connect MCP server "+srv.Name+": "+err.Error())
+			// Remove the runs we already registered since we're failing early.
+			errMsg := "failed to connect MCP server " + srv.Name + ": " + err.Error()
+			h.runs.SetFailed(runID, errMsg)
+			h.history.SetFailed(runID, errMsg)
 			writeJSON(w, http.StatusBadGateway, map[string]string{
-				"error": "failed to connect MCP server " + srv.Name + ": " + err.Error(),
+				"error": errMsg,
 			})
 			return
 		}
@@ -223,8 +233,12 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		h.runs.SetRunning(runID)
+		h.history.SetRunning(runID)
 
-		result, _, err := h.agentRuntime.RunWithReporter(ctx, defSnap, msgSnap, nil, historySnap, ephemeral...)
+		// Create a history adapter that implements agent.HistoryRecorder
+		hr := &historyRecorderAdapter{hm: h.history, runID: runID}
+
+		result, _, err := h.agentRuntime.RunWithHistory(ctx, defSnap, msgSnap, nil, hr, historySnap, ephemeral...)
 		if err != nil {
 			if ctx.Err() != nil {
 				// Context was canceled externally (e.g. via POST /runs/{id}/cancel).
@@ -234,11 +248,13 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 			}
 			slog.Error("agent run failed", "run_id", runID, "agent", name, "error", err)
 			h.runs.SetFailed(runID, err.Error())
+			h.history.SetFailed(runID, err.Error())
 			return
 		}
 
 		slog.Info("agent run completed", "run_id", runID, "agent", name)
 		h.runs.SetCompleted(runID, result)
+		h.history.SetCompleted(runID, result)
 	}()
 
 	writeJSON(w, http.StatusAccepted, runAgentResponse{RunID: runID})
@@ -267,7 +283,61 @@ func (h *Handler) cancelRun(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	h.history.Cancel(id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "canceled"})
+}
+
+func (h *Handler) listRuns(w http.ResponseWriter, r *http.Request) {
+	agentFilter := r.URL.Query().Get("agent")
+	statusFilter := RunStatus(r.URL.Query().Get("status"))
+	runs := h.history.List(agentFilter, statusFilter)
+	writeJSON(w, http.StatusOK, runs)
+}
+
+func (h *Handler) getRunHistory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	hist := h.history.Get(id)
+	if hist == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "run not found: " + id})
+		return
+	}
+	writeJSON(w, http.StatusOK, hist)
+}
+
+type historyRecorderAdapter struct {
+	hm    *HistoryManager
+	runID string
+}
+
+func (a *historyRecorderAdapter) StartTurn(turnNum int) {
+	a.hm.StartTurn(a.runID, turnNum)
+}
+
+func (a *historyRecorderAdapter) RecordRequest(requestJSON string) {
+	a.hm.RecordRequest(a.runID, requestJSON)
+}
+
+func (a *historyRecorderAdapter) RecordResponse(responseJSON string) {
+	a.hm.RecordResponse(a.runID, responseJSON)
+}
+
+func (a *historyRecorderAdapter) EndTurn() {
+	a.hm.EndTurn(a.runID)
+}
+
+func (a *historyRecorderAdapter) StartToolCall(toolCallID, toolName, arguments string) {
+	a.hm.StartToolCall(a.runID, toolCallID, toolName, arguments)
+}
+
+func (a *historyRecorderAdapter) EndToolCall(result string, status agent.ToolCallStatus, errMsg string) {
+	var s ToolCallStatus
+	switch status {
+	case agent.ToolCallStatusSuccess:
+		s = ToolCallStatusSuccess
+	case agent.ToolCallStatusError:
+		s = ToolCallStatusError
+	}
+	a.hm.EndToolCall(a.runID, result, s, errMsg)
 }
 
 func (h *Handler) getRawAgent(w http.ResponseWriter, r *http.Request) {

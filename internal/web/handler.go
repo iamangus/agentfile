@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/angoo/agentfile/internal/agent"
+	"github.com/angoo/agentfile/internal/api"
 	"github.com/angoo/agentfile/internal/config"
 	"github.com/angoo/agentfile/internal/llm"
 	"github.com/angoo/agentfile/internal/mcpclient"
@@ -133,10 +135,11 @@ type Handler struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	runs     map[string]*agentRun
+	history  *api.HistoryManager
 }
 
 // NewHandler creates a new web UI handler.
-func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.Pool) (*Handler, error) {
+func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.Pool, history *api.HistoryManager) (*Handler, error) {
 	funcMap := template.FuncMap{
 		"renderMarkdown": renderMarkdown,
 		// dict builds a map[string]any for passing multiple named values to sub-templates.
@@ -156,6 +159,19 @@ func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.P
 			}
 			return m
 		},
+		"json": func(v any) template.JS {
+			b, err := json.MarshalIndent(v, "", "  ")
+			if err != nil {
+				return template.JS("{}")
+			}
+			return template.JS(b)
+		},
+		"truncate": func(s string, max int) string {
+			if len(s) <= max {
+				return s
+			}
+			return s[:max] + "..."
+		},
 	}
 	tmpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
@@ -168,6 +184,7 @@ func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.P
 		tmpl:     tmpl,
 		sessions: make(map[string]*Session),
 		runs:     make(map[string]*agentRun),
+		history:  history,
 	}, nil
 }
 
@@ -191,6 +208,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tools", h.toolsPage)
 	mux.HandleFunc("GET /tools/list", h.toolListPartial)
 	mux.HandleFunc("POST /tools/generate", h.toolGeneratePartial)
+	mux.HandleFunc("GET /runs", h.runsPage)
+	mux.HandleFunc("GET /runs/list", h.runsListPartial)
+	mux.HandleFunc("GET /runs/{id}", h.runDetailPage)
+	mux.HandleFunc("GET /runs/{id}/events", h.runHistoryEvents)
 	slog.Info("web UI routes registered")
 }
 
@@ -752,4 +773,133 @@ func (h *Handler) orderedSessions() []*Session {
 
 func newID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+// --- Runs page ---
+
+type runsPageData struct {
+	ActivePage   string
+	Runs         []*api.RunHistory
+	Agents       []string
+	AgentFilter  string
+	StatusFilter string
+}
+
+func (h *Handler) runsPage(w http.ResponseWriter, r *http.Request) {
+	agentFilter := r.URL.Query().Get("agent")
+	statusFilter := api.RunStatus(r.URL.Query().Get("status"))
+
+	runs := h.history.List(agentFilter, statusFilter)
+	agents := h.history.ListAgents()
+
+	data := runsPageData{
+		ActivePage:   "runs",
+		Runs:         runs,
+		Agents:       agents,
+		AgentFilter:  agentFilter,
+		StatusFilter: string(statusFilter),
+	}
+
+	if r.Header.Get("HX-Request") == "true" {
+		h.renderPartial(w, "runs-content", data)
+		return
+	}
+
+	h.render(w, "runs.html", data)
+}
+
+func (h *Handler) runsListPartial(w http.ResponseWriter, r *http.Request) {
+	agentFilter := r.URL.Query().Get("agent")
+	statusFilter := api.RunStatus(r.URL.Query().Get("status"))
+
+	runs := h.history.List(agentFilter, statusFilter)
+
+	data := runsPageData{
+		Runs:         runs,
+		AgentFilter:  agentFilter,
+		StatusFilter: string(statusFilter),
+	}
+	h.renderPartial(w, "runs-list", data)
+}
+
+type runDetailData struct {
+	ActivePage string
+	Run        *api.RunHistory
+}
+
+func (h *Handler) runDetailPage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	run := h.history.Get(id)
+	if run == nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+
+	data := runDetailData{
+		ActivePage: "runs",
+		Run:        run,
+	}
+
+	if r.Header.Get("HX-Request") == "true" {
+		h.renderPartial(w, "run-detail-content", data)
+		return
+	}
+
+	h.render(w, "runs.html", data)
+}
+
+func (h *Handler) runHistoryEvents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	run := h.history.Get(id)
+	if run == nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	lastStatus := run.Status
+	lastTurnCount := len(run.Turns)
+
+	for {
+		select {
+		case <-ticker.C:
+			run = h.history.Get(id)
+			if run == nil {
+				return
+			}
+
+			if run.Status != lastStatus || len(run.Turns) != lastTurnCount {
+				lastStatus = run.Status
+				lastTurnCount = len(run.Turns)
+
+				data := runDetailData{Run: run}
+				var buf strings.Builder
+				if err := h.tmpl.ExecuteTemplate(&buf, "run-detail-content", data); err == nil {
+					sseData := strings.ReplaceAll(buf.String(), "\n", "\ndata: ")
+					fmt.Fprintf(w, "event: update\ndata: %s\n\n", sseData)
+					flusher.Flush()
+				}
+			}
+
+			if run.Status == api.RunStatusCompleted || run.Status == api.RunStatusFailed || run.Status == api.RunStatusCanceled {
+				return
+			}
+
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
