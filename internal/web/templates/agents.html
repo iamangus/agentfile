@@ -315,6 +315,20 @@ function syncStructuredOutput(name) {
   var jsonInput = document.getElementById('so-json-' + name);
   jsonInput.value = textarea.value;
 }
+
+// Initialise hidden JSON input from textarea so DOM value is always the decoded string,
+// not the HTML-entity-encoded attribute value.
+(function() {
+  var scripts = document.currentScript ? [document.currentScript] : document.getElementsByTagName('script');
+  var s = scripts[scripts.length - 1];
+  var container = s.closest('form') || s.parentElement;
+  var textareas = container ? container.querySelectorAll('textarea[id^="so-textarea-"]') : [];
+  textareas.forEach(function(ta) {
+    var name = ta.id.replace('so-textarea-', '');
+    var jsonInput = document.getElementById('so-json-' + name);
+    if (jsonInput) jsonInput.value = ta.value;
+  });
+}());
 </script>
 {{end}}
 
