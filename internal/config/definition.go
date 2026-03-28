@@ -25,7 +25,10 @@ type Definition struct {
 // StructuredOutput configures JSON Schema constrained responses.
 // It maps directly to the OpenAI json_schema response_format block.
 type StructuredOutput struct {
-	Name   string          `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Schema holds the JSON Schema for the expected response.
+	// The yaml:"schema" tag is not used by the library (UnmarshalYAML handles it manually),
+	// but is kept for documentation purposes.
 	Schema json.RawMessage `yaml:"schema" json:"schema"`
 	Strict bool            `yaml:"strict,omitempty" json:"strict,omitempty"`
 }
@@ -62,19 +65,25 @@ func (s *StructuredOutput) UnmarshalYAML(value *yaml.Node) error {
 // MarshalYAML implements yaml.Marshaler for StructuredOutput.
 // It converts the JSON schema back to a nested YAML map.
 func (s StructuredOutput) MarshalYAML() (any, error) {
+	type withSchema struct {
+		Name   string `yaml:"name"`
+		Strict bool   `yaml:"strict,omitempty"`
+		Schema any    `yaml:"schema"`
+	}
+	type withoutSchema struct {
+		Name   string `yaml:"name"`
+		Strict bool   `yaml:"strict,omitempty"`
+	}
+
+	if len(s.Schema) == 0 {
+		return withoutSchema{Name: s.Name, Strict: s.Strict}, nil
+	}
+
 	var schemaMap any
 	if err := json.Unmarshal(s.Schema, &schemaMap); err != nil {
 		return nil, fmt.Errorf("structured_output.schema: %w", err)
 	}
-	return struct {
-		Name   string `yaml:"name"`
-		Strict bool   `yaml:"strict,omitempty"`
-		Schema any    `yaml:"schema"`
-	}{
-		Name:   s.Name,
-		Strict: s.Strict,
-		Schema: schemaMap,
-	}, nil
+	return withSchema{Name: s.Name, Strict: s.Strict, Schema: schemaMap}, nil
 }
 
 // yamlNodeToJSON converts a *yaml.Node to a JSON byte slice.
