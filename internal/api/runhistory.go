@@ -54,9 +54,9 @@ type RunHistory struct {
 	CompletedAt    time.Time     `json:"completed_at,omitempty"`
 	TotalDuration  time.Duration `json:"total_duration,omitempty"`
 
-	currentTurn     *TurnRecord
-	currentToolCall *ToolCallRecord
-	cancel          context.CancelFunc
+	currentTurn      *TurnRecord
+	currentToolCalls map[string]*ToolCallRecord // keyed by toolCallID; supports parallel calls
+	cancel           context.CancelFunc
 }
 
 type HistoryManager struct {
@@ -120,6 +120,7 @@ func (m *HistoryManager) StartTurn(id string, turnNum int) {
 			ToolCalls:  make([]ToolCallRecord, 0),
 			StartedAt:  time.Now(),
 		}
+		h.currentToolCalls = make(map[string]*ToolCallRecord)
 	}
 }
 
@@ -153,7 +154,7 @@ func (m *HistoryManager) StartToolCall(id, toolCallID, toolName, arguments strin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if h, ok := m.runs[id]; ok && h.currentTurn != nil {
-		h.currentToolCall = &ToolCallRecord{
+		h.currentToolCalls[toolCallID] = &ToolCallRecord{
 			ID:        toolCallID,
 			Name:      toolName,
 			Arguments: arguments,
@@ -162,17 +163,23 @@ func (m *HistoryManager) StartToolCall(id, toolCallID, toolName, arguments strin
 	}
 }
 
-func (m *HistoryManager) EndToolCall(id string, result string, status ToolCallStatus, errMsg string) {
+func (m *HistoryManager) EndToolCall(id, toolCallID string, result string, status ToolCallStatus, errMsg string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if h, ok := m.runs[id]; ok && h.currentTurn != nil && h.currentToolCall != nil {
-		h.currentToolCall.Result = result
-		h.currentToolCall.Status = status
-		h.currentToolCall.Error = errMsg
-		h.currentToolCall.Duration = time.Since(h.currentToolCall.StartedAt)
-		h.currentTurn.ToolCalls = append(h.currentTurn.ToolCalls, *h.currentToolCall)
-		h.currentToolCall = nil
+	h, ok := m.runs[id]
+	if !ok || h.currentTurn == nil {
+		return
 	}
+	tc, ok := h.currentToolCalls[toolCallID]
+	if !ok {
+		return
+	}
+	tc.Result = result
+	tc.Status = status
+	tc.Error = errMsg
+	tc.Duration = time.Since(tc.StartedAt)
+	h.currentTurn.ToolCalls = append(h.currentTurn.ToolCalls, *tc)
+	delete(h.currentToolCalls, toolCallID)
 }
 
 func (m *HistoryManager) SetCompleted(id, response string) {

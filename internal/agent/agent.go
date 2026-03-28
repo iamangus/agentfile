@@ -37,7 +37,7 @@ type HistoryRecorder interface {
 	RecordResponse(responseJSON string)
 	EndTurn()
 	StartToolCall(toolCallID, toolName, arguments string)
-	EndToolCall(result string, status ToolCallStatus, errMsg string)
+	EndToolCall(toolCallID, result string, status ToolCallStatus, errMsg string)
 }
 
 // ToolCallStatus represents the outcome of a tool call.
@@ -288,7 +288,7 @@ func (rt *Runtime) RunWithHistory(ctx context.Context, def *config.Definition, u
 						status = ToolCallStatusError
 						errMsg = err.Error()
 					}
-					hr.EndToolCall(result, status, errMsg)
+					hr.EndToolCall(tc.ID, result, status, errMsg)
 				}
 
 				if err != nil {

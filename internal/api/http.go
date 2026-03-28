@@ -339,7 +339,7 @@ func (a *historyRecorderAdapter) StartToolCall(toolCallID, toolName, arguments s
 	a.hm.StartToolCall(a.runID, toolCallID, toolName, arguments)
 }
 
-func (a *historyRecorderAdapter) EndToolCall(result string, status agent.ToolCallStatus, errMsg string) {
+func (a *historyRecorderAdapter) EndToolCall(toolCallID, result string, status agent.ToolCallStatus, errMsg string) {
 	var s ToolCallStatus
 	switch status {
 	case agent.ToolCallStatusSuccess:
@@ -347,39 +347,31 @@ func (a *historyRecorderAdapter) EndToolCall(result string, status agent.ToolCal
 	case agent.ToolCallStatusError:
 		s = ToolCallStatusError
 	}
-	a.hm.EndToolCall(a.runID, result, s, errMsg)
-
-	// Fire async summarization if configured.
-	if a.summaryAgentName == "" || a.runtime == nil {
-		return
-	}
-	// Capture values needed by the goroutine before it runs.
-	// We need the tool call ID — grab it from the just-committed record.
-	var toolCallID, toolName, arguments string
-	func() {
+	// Capture name/arguments before committing (they're in currentToolCalls under the lock).
+	var toolName, arguments string
+	if a.summaryAgentName != "" && a.runtime != nil {
 		a.hm.mu.RLock()
-		defer a.hm.mu.RUnlock()
-		h, ok := a.hm.runs[a.runID]
-		if !ok || len(h.Turns) == 0 {
-			return
+		if h, ok := a.hm.runs[a.runID]; ok {
+			if tc, ok := h.currentToolCalls[toolCallID]; ok {
+				toolName = tc.Name
+				arguments = tc.Arguments
+			}
 		}
-		lastTurn := h.Turns[len(h.Turns)-1]
-		if len(lastTurn.ToolCalls) == 0 {
-			return
-		}
-		last := lastTurn.ToolCalls[len(lastTurn.ToolCalls)-1]
-		toolCallID = last.ID
-		toolName = last.Name
-		arguments = last.Arguments
-	}()
-	if toolCallID == "" {
+		a.hm.mu.RUnlock()
+	}
+
+	a.hm.EndToolCall(a.runID, toolCallID, result, s, errMsg)
+
+	if a.summaryAgentName == "" || a.runtime == nil || toolName == "" {
 		return
 	}
+
 	runID := a.runID
 	hm := a.hm
 	rt := a.runtime
 	agentName := a.summaryAgentName
 	resultSnap := result
+	tcID := toolCallID
 
 	go func() {
 		def, ok := rt.GetAgentDef(agentName)
@@ -393,7 +385,6 @@ func (a *historyRecorderAdapter) EndToolCall(result string, status agent.ToolCal
 		if err != nil {
 			return
 		}
-		// Strip markdown code fences if the model wrapped the JSON.
 		resp = strings.TrimSpace(resp)
 		if strings.HasPrefix(resp, "```") {
 			if idx := strings.Index(resp[3:], "\n"); idx >= 0 {
@@ -406,7 +397,7 @@ func (a *historyRecorderAdapter) EndToolCall(result string, status agent.ToolCal
 		if err := json.Unmarshal([]byte(resp), &summary); err != nil {
 			return
 		}
-		hm.SetToolCallSummary(runID, toolCallID, summary)
+		hm.SetToolCallSummary(runID, tcID, summary)
 	}()
 }
 
