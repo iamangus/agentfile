@@ -166,6 +166,13 @@ func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.P
 			}
 			return template.JS(b)
 		},
+		"jsonAttr": func(v any) string {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return "[]"
+			}
+			return string(b)
+		},
 		"truncate": func(s string, max int) string {
 			if len(s) <= max {
 				return s

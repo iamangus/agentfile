@@ -321,6 +321,17 @@
       height: 100%;
       color: hsl(var(--muted-foreground));
     }
+
+    .conv-tool-summary {
+      padding: 4px 12px 6px 12px;
+      font-size: 11px;
+      color: hsl(var(--muted-foreground));
+      font-style: italic;
+      line-height: 1.5;
+      border-top: 1px solid hsl(var(--border) / 0.4);
+    }
+    .conv-tool-summary-reason::before { content: 'Why: '; font-weight: 600; font-style: normal; }
+    .conv-tool-summary-outcome::before { content: 'Result: '; font-weight: 600; font-style: normal; }
   </style>
 </head>
 <body class="bg-background text-foreground flex flex-col min-h-screen">
@@ -454,7 +465,7 @@
         Conversation ({{len .Run.Turns}} turns)
       </h3>
       {{range $i, $turn := .Run.Turns}}
-      <div class="conv-turn" data-turn="{{$turn.TurnNumber}}" data-request="{{$turn.Request}}" data-response="{{$turn.Response}}">
+      <div class="conv-turn" data-turn="{{$turn.TurnNumber}}" data-request="{{$turn.Request}}" data-response="{{$turn.Response}}" data-tool-records="{{jsonAttr $turn.ToolCalls}}">
         <div class="conv-turn-header">
           <span>Turn {{$turn.TurnNumber}}</span>
           <span class="text-xs text-muted-foreground">{{$turn.Duration}}</span>
@@ -652,8 +663,18 @@
   function renderConversationView(turnEl) {
     var requestJson = turnEl.dataset.request;
     var responseJson = turnEl.dataset.response;
+    var toolRecordsJson = turnEl.dataset.toolRecords || '[]';
     var body = turnEl.querySelector('.conv-turn-body');
     if (!body) return;
+
+    // Build a map from tool call ID -> summary
+    var summaryMap = {};
+    try {
+      var records = JSON.parse(toolRecordsJson);
+      records.forEach(function(r) {
+        if (r.id && r.summary) summaryMap[r.id] = r.summary;
+      });
+    } catch(e) {}
 
     var html = '';
 
@@ -669,13 +690,15 @@
     if (toolCalls.length > 0) {
       html += '<div class="conv-message">';
       html += '<div class="conv-message-label">🔧 Tool Calls (' + toolCalls.length + ')</div>';
-      
+
       for (var i = 0; i < toolCalls.length; i++) {
         var tc = toolCalls[i];
         var func = tc.function || {};
         var name = func.name || 'unknown';
         var args = func.arguments || '{}';
-        
+        var tcID = tc.id || '';
+        var summary = summaryMap[tcID] || null;
+
         html += '<div class="conv-tool-call" onclick="this.classList.toggle(\'open\')">';
         html += '<div class="conv-tool-header">';
         html += '<span class="conv-tool-name">' + escapeHtml(name) + '</span>';
@@ -684,16 +707,22 @@
         html += '<polyline points="9 18 15 12 9 6"></polyline>';
         html += '</svg>';
         html += '</div></div>';
+
+        if (summary) {
+          html += '<div class="conv-tool-summary">';
+          if (summary.reason) html += '<div class="conv-tool-summary-reason">' + escapeHtml(summary.reason) + '</div>';
+          if (summary.outcome) html += '<div class="conv-tool-summary-outcome">' + escapeHtml(summary.outcome) + '</div>';
+          html += '</div>';
+        }
+
         html += '<div class="conv-tool-body">';
-        
         html += '<div class="conv-tool-args">';
         html += '<div class="conv-tool-section-label">Arguments</div>';
         html += '<div class="conv-tool-section-content">' + escapeHtml(formatToolArgs(args)) + '</div>';
         html += '</div>';
-        
         html += '</div></div>';
       }
-      
+
       html += '</div>';
     }
 
