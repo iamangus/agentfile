@@ -251,22 +251,71 @@
   </div>
 
   <!-- YAML form -->
-  <div class="flex-1 flex flex-col p-4 gap-2 overflow-hidden">
+  <div class="flex-1 flex flex-col p-4 gap-3 overflow-y-auto">
     <form
       id="yaml-form-{{.Name}}"
       hx-put="/agents/{{.Name}}/yaml"
       hx-target="#agent-editor"
       hx-swap="innerHTML"
-      class="flex-1 flex flex-col overflow-hidden"
+      class="flex flex-col gap-3"
     >
       <textarea
         name="yaml"
         class="uk-textarea yaml-editor"
+        style="min-height: 280px; flex: none;"
         spellcheck="false"
       >{{.RawYAML}}</textarea>
+
+      <!-- Hidden inputs submitted with the form -->
+      <input type="hidden" name="structured_output_enabled" id="so-enabled-{{.Name}}" value="{{if .StructuredOutputJSON}}true{{else}}false{{end}}" />
+      <input type="hidden" name="structured_output_json" id="so-json-{{.Name}}" value="{{.StructuredOutputJSON}}" />
+
+      <!-- Structured Output section -->
+      <div style="border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 12px 14px;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+          <input
+            type="checkbox"
+            id="so-toggle-{{.Name}}"
+            {{if .StructuredOutputJSON}}checked{{end}}
+            onchange="toggleStructuredOutput('{{.Name}}')"
+            style="width: 15px; height: 15px;"
+          />
+          <span class="text-sm font-medium">Enable structured output (JSON Schema)</span>
+        </label>
+        <div id="so-panel-{{.Name}}" style="margin-top: 10px; {{if eq .StructuredOutputJSON ""}}display:none;{{end}}">
+          <p class="text-xs text-muted-foreground" style="margin-bottom: 6px;">
+            JSON object with <code>name</code>, <code>schema</code>, and optionally <code>strict</code>.
+            Same object passed as <code>response_schema</code> in the run API.
+          </p>
+          <textarea
+            id="so-textarea-{{.Name}}"
+            class="uk-textarea"
+            style="font-family: ui-monospace, monospace; font-size: 12px; min-height: 140px; border-radius: 6px;"
+            spellcheck="false"
+            placeholder='{"name": "result", "strict": true, "schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}'
+            oninput="syncStructuredOutput('{{.Name}}')"
+          >{{.StructuredOutputJSON}}</textarea>
+        </div>
+      </div>
     </form>
   </div>
 </div>
+
+<script>
+function toggleStructuredOutput(name) {
+  var checkbox = document.getElementById('so-toggle-' + name);
+  var panel = document.getElementById('so-panel-' + name);
+  var enabledInput = document.getElementById('so-enabled-' + name);
+  panel.style.display = checkbox.checked ? 'block' : 'none';
+  enabledInput.value = checkbox.checked ? 'true' : 'false';
+}
+
+function syncStructuredOutput(name) {
+  var textarea = document.getElementById('so-textarea-' + name);
+  var jsonInput = document.getElementById('so-json-' + name);
+  jsonInput.value = textarea.value;
+}
+</script>
 {{end}}
 
 {{define "save-yaml-response"}}
