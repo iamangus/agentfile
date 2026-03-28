@@ -521,8 +521,9 @@ type agentsPageData struct {
 }
 
 type agentEditorData struct {
-	Name    string
-	RawYAML string
+	Name                 string
+	RawYAML              string
+	StructuredOutputJSON string // JSON representation of structured_output; empty if not set
 }
 
 func (h *Handler) agentsPage(w http.ResponseWriter, r *http.Request) {
@@ -557,9 +558,35 @@ func (h *Handler) agentEditPartial(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent not found", http.StatusNotFound)
 		return
 	}
+
+	// Parse to extract StructuredOutput separately from the YAML editor.
+	var def config.Definition
+	if err := yamlpkg.Unmarshal(raw, &def); err != nil {
+		http.Error(w, "invalid agent YAML", http.StatusInternalServerError)
+		return
+	}
+
+	var soJSON string
+	if def.StructuredOutput != nil {
+		b, err := json.MarshalIndent(def.StructuredOutput, "", "  ")
+		if err == nil {
+			soJSON = string(b)
+		}
+	}
+
+	// Strip structured_output from displayed YAML so it's only edited via the JSON panel.
+	var m map[string]any
+	if err := yamlpkg.Unmarshal(raw, &m); err == nil {
+		delete(m, "structured_output")
+		if stripped, err := yamlpkg.Marshal(m); err == nil {
+			raw = stripped
+		}
+	}
+
 	data := agentEditorData{
-		Name:    name,
-		RawYAML: string(raw),
+		Name:                 name,
+		RawYAML:              string(raw),
+		StructuredOutputJSON: soJSON,
 	}
 	h.renderPartial(w, "agent-editor", data)
 }
@@ -611,16 +638,31 @@ func (h *Handler) createAgentYaml(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Parse name from the saved YAML to load the editor for the new agent.
 	var def config.Definition
 	if err := yamlpkg.Unmarshal([]byte(rawYAML), &def); err != nil || def.Name == "" {
-		// Fall back to just refreshing the agent list.
 		h.renderPartial(w, "agent-list-items", agentsPageData{Agents: h.store.ListDefinitions()})
 		return
 	}
 	raw, _ := h.store.GetRawDefinition(def.Name)
+
+	var soJSON string
+	var savedDef config.Definition
+	if err := yamlpkg.Unmarshal(raw, &savedDef); err == nil && savedDef.StructuredOutput != nil {
+		if b, err := json.MarshalIndent(savedDef.StructuredOutput, "", "  "); err == nil {
+			soJSON = string(b)
+		}
+	}
+	// Strip structured_output from displayed YAML.
+	var m map[string]any
+	if err := yamlpkg.Unmarshal(raw, &m); err == nil {
+		delete(m, "structured_output")
+		if stripped, err := yamlpkg.Marshal(m); err == nil {
+			raw = stripped
+		}
+	}
+
 	h.renderPartial(w, "save-yaml-response", saveYamlData{
-		Editor: agentEditorData{Name: def.Name, RawYAML: string(raw)},
+		Editor: agentEditorData{Name: def.Name, RawYAML: string(raw), StructuredOutputJSON: soJSON},
 		Agents: h.store.ListDefinitions(),
 	})
 }
@@ -628,16 +670,60 @@ func (h *Handler) createAgentYaml(w http.ResponseWriter, r *http.Request) {
 // saveAgentYaml handles form-based YAML save from the web UI.
 func (h *Handler) saveAgentYaml(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	yaml := r.FormValue("yaml")
-	if err := h.store.SaveRawDefinition(name, []byte(yaml)); err != nil {
+	yamlStr := r.FormValue("yaml")
+	soJSON := r.FormValue("structured_output_json")
+	soEnabled := r.FormValue("structured_output_enabled") == "true"
+
+	// Parse the submitted YAML into a Definition.
+	var def config.Definition
+	if err := yamlpkg.Unmarshal([]byte(yamlStr), &def); err != nil {
+		http.Error(w, "invalid YAML: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Apply structured output: if enabled and JSON provided, set it; otherwise clear it.
+	if soEnabled && soJSON != "" {
+		var so config.StructuredOutput
+		if err := json.Unmarshal([]byte(soJSON), &so); err != nil {
+			http.Error(w, "invalid structured output JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		def.StructuredOutput = &so
+	} else {
+		def.StructuredOutput = nil
+	}
+
+	// Marshal back to canonical YAML and save.
+	merged, err := yamlpkg.Marshal(&def)
+	if err != nil {
+		http.Error(w, "failed to marshal YAML: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.store.SaveRawDefinition(name, merged); err != nil {
 		slog.Error("failed to save yaml", "name", name, "error", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Respond with both the updated agent list (OOB) and a fresh editor.
+
+	// Re-load and re-split so the editor reflects the saved state.
 	raw, _ := h.store.GetRawDefinition(name)
+	var savedDef config.Definition
+	var soJSONOut string
+	if err := yamlpkg.Unmarshal(raw, &savedDef); err == nil && savedDef.StructuredOutput != nil {
+		if b, err := json.MarshalIndent(savedDef.StructuredOutput, "", "  "); err == nil {
+			soJSONOut = string(b)
+		}
+	}
+	// Strip structured_output from displayed YAML.
+	var m map[string]any
+	if err := yamlpkg.Unmarshal(raw, &m); err == nil {
+		delete(m, "structured_output")
+		if stripped, err := yamlpkg.Marshal(m); err == nil {
+			raw = stripped
+		}
+	}
 	h.renderPartial(w, "save-yaml-response", saveYamlData{
-		Editor: agentEditorData{Name: name, RawYAML: string(raw)},
+		Editor: agentEditorData{Name: name, RawYAML: string(raw), StructuredOutputJSON: soJSONOut},
 		Agents: h.store.ListDefinitions(),
 	})
 }
