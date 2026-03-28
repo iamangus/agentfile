@@ -244,7 +244,7 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 			summaryAgentName: h.summaryAgentName,
 		}
 
-		result, _, err := h.agentRuntime.RunWithHistory(ctx, defSnap, msgSnap, nil, hr, historySnap, ephemeral...)
+		result, _, err := h.agentRuntime.RunWithHistory(ctx, defSnap, msgSnap, nil, hr, nil, historySnap, ephemeral...)
 		if err != nil {
 			if ctx.Err() != nil {
 				// Context was canceled externally (e.g. via POST /runs/{id}/cancel).

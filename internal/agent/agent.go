@@ -106,11 +106,11 @@ func (rt *Runtime) Run(ctx context.Context, def *config.Definition, userInput st
 // agent's static tool list for the duration of this run only.
 // It returns the final text response, the full updated message history, and any error.
 func (rt *Runtime) RunWithReporter(ctx context.Context, def *config.Definition, userInput string, r Reporter, history []llm.Message, ephemeral ...*mcpclient.EphemeralConn) (string, []llm.Message, error) {
-	return rt.RunWithHistory(ctx, def, userInput, r, nil, history, ephemeral...)
+	return rt.RunWithHistory(ctx, def, userInput, r, nil, nil, history, ephemeral...)
 }
 
 // RunWithHistory is like RunWithReporter but also records detailed execution history.
-func (rt *Runtime) RunWithHistory(ctx context.Context, def *config.Definition, userInput string, r Reporter, hr HistoryRecorder, history []llm.Message, ephemeral ...*mcpclient.EphemeralConn) (string, []llm.Message, error) {
+func (rt *Runtime) RunWithHistory(ctx context.Context, def *config.Definition, userInput string, r Reporter, hr HistoryRecorder, structuredOutput *config.StructuredOutput, history []llm.Message, ephemeral ...*mcpclient.EphemeralConn) (string, []llm.Message, error) {
 	report(r, "Thinking…")
 
 	// Build tool definitions for the LLM
@@ -160,7 +160,21 @@ func (rt *Runtime) RunWithHistory(ctx context.Context, def *config.Definition, u
 		if len(toolDefs) > 0 {
 			req.Tools = toolDefs
 		}
-		if def.ForceJSON {
+		// Build response format: structured_output override > definition's structured_output > force_json
+		so := structuredOutput
+		if so == nil {
+			so = def.StructuredOutput
+		}
+		if so != nil {
+			req.ResponseFormat = &llm.ResponseFormat{
+				Type: "json_schema",
+				JSONSchema: &llm.JSONSchema{
+					Name:   so.Name,
+					Schema: so.Schema,
+					Strict: so.Strict,
+				},
+			}
+		} else if def.ForceJSON {
 			req.ResponseFormat = &llm.ResponseFormat{Type: "json_object"}
 		}
 
