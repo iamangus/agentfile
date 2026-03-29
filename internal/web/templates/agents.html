@@ -477,14 +477,6 @@ function syncStructuredOutput(name) {
 </script>
 {{end}}
 
-{{define "save-yaml-response"}}
-{{/* OOB: refresh agent list in sidebar */}}
-<div id="agent-list" hx-swap-oob="true">
-  {{template "agent-list-items" (dict "Agents" .Agents)}}
-</div>
-{{/* Main: re-render editor with latest YAML */}}
-{{template "agent-editor" .Editor}}
-{{end}}
 
 {{define "save-agent-response"}}
 {{/* OOB: refresh agent list in sidebar */}}

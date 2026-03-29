@@ -574,19 +574,12 @@ func (h *Handler) newAgentEditor(w http.ResponseWriter, r *http.Request) {
 // saveAgentForm handles PUT /agents/{name} — saves an existing agent via the form UI.
 func (h *Handler) saveAgentForm(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	def := definitionFromForm(r)
-	def.Name = name
-
-	soJSON := r.FormValue("structured_output_json")
-	soEnabled := r.FormValue("structured_output_enabled") == "true"
-	if soEnabled && soJSON != "" {
-		var so config.StructuredOutput
-		if err := json.Unmarshal([]byte(soJSON), &so); err != nil {
-			http.Error(w, "invalid structured output JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		def.StructuredOutput = &so
+	def, err := definitionFromForm(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+	def.Name = name
 
 	if err := def.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -610,19 +603,12 @@ func (h *Handler) saveAgentForm(w http.ResponseWriter, r *http.Request) {
 
 // createAgentFormNew handles POST /agents/form — creates a new agent via the form UI.
 func (h *Handler) createAgentFormNew(w http.ResponseWriter, r *http.Request) {
-	def := definitionFromForm(r)
-	def.Name = r.FormValue("name")
-
-	soJSON := r.FormValue("structured_output_json")
-	soEnabled := r.FormValue("structured_output_enabled") == "true"
-	if soEnabled && soJSON != "" {
-		var so config.StructuredOutput
-		if err := json.Unmarshal([]byte(soJSON), &so); err != nil {
-			http.Error(w, "invalid structured output JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		def.StructuredOutput = &so
+	def, err := definitionFromForm(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+	def.Name = r.FormValue("name")
 
 	if err := def.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -716,7 +702,7 @@ func structuredOutputJSON(def *config.Definition) string {
 
 // definitionFromForm builds a Definition from form values.
 // Kind and Name must be set by the caller.
-func definitionFromForm(r *http.Request) *config.Definition {
+func definitionFromForm(r *http.Request) (*config.Definition, error) {
 	def := &config.Definition{
 		Kind:         config.KindAgent,
 		Description:  r.FormValue("description"),
@@ -740,7 +726,16 @@ func definitionFromForm(r *http.Request) *config.Definition {
 			def.Tools = append(def.Tools, t)
 		}
 	}
-	return def
+	soJSON := r.FormValue("structured_output_json")
+	soEnabled := r.FormValue("structured_output_enabled") == "true"
+	if soEnabled && soJSON != "" {
+		var so config.StructuredOutput
+		if err := json.Unmarshal([]byte(soJSON), &so); err != nil {
+			return nil, fmt.Errorf("invalid structured output JSON: %w", err)
+		}
+		def.StructuredOutput = &so
+	}
+	return def, nil
 }
 
 // deleteAgentWeb handles web UI agent deletion.
