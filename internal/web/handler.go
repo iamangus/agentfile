@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,6 @@ import (
 	"github.com/angoo/agentfile/internal/config"
 	"github.com/angoo/agentfile/internal/llm"
 	"github.com/angoo/agentfile/internal/mcpclient"
-	yamlpkg "gopkg.in/yaml.v3"
 )
 
 //go:embed templates/*.html
@@ -179,6 +179,9 @@ func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.P
 			}
 			return s[:max] + "..."
 		},
+		"joinLines": func(ss []string) string {
+			return strings.Join(ss, "\n")
+		},
 	}
 	tmpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
@@ -208,9 +211,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /agents/list", h.agentListPartial)
 	mux.HandleFunc("GET /agents/new", h.newAgentEditor)
 	mux.HandleFunc("GET /agents/{name}/edit", h.agentEditPartial)
-	mux.HandleFunc("POST /agents/yaml", h.createAgentYaml)
-	mux.HandleFunc("POST /agents", h.createAgentForm)
-	mux.HandleFunc("PUT /agents/{name}/yaml", h.saveAgentYaml)
+	mux.HandleFunc("PUT /agents/{name}", h.saveAgentForm)
+	mux.HandleFunc("POST /agents/form", h.createAgentFormNew)
+	mux.HandleFunc("POST /agents/{name}/clone", h.cloneAgent)
 	mux.HandleFunc("DELETE /agents/{name}", h.deleteAgentWeb)
 	mux.HandleFunc("GET /tools", h.toolsPage)
 	mux.HandleFunc("GET /tools/list", h.toolListPartial)
@@ -521,9 +524,8 @@ type agentsPageData struct {
 }
 
 type agentEditorData struct {
-	Name                 string
-	RawYAML              string
-	StructuredOutputJSON string // JSON representation of structured_output; empty if not set
+	Def                  *config.Definition
+	StructuredOutputJSON string // JSON for the structured output panel; empty if not set
 }
 
 func (h *Handler) agentsPage(w http.ResponseWriter, r *http.Request) {
@@ -553,60 +555,39 @@ func (h *Handler) agentListPartial(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) agentEditPartial(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	raw, err := h.store.GetRawDefinition(name)
-	if err != nil {
+	def := h.store.GetDefinition(name)
+	if def == nil {
 		http.Error(w, "agent not found", http.StatusNotFound)
 		return
 	}
-
-	// Parse to extract StructuredOutput separately from the YAML editor.
-	var def config.Definition
-	if err := yamlpkg.Unmarshal(raw, &def); err != nil {
-		http.Error(w, "invalid agent YAML", http.StatusInternalServerError)
-		return
-	}
-
-	var soJSON string
-	if def.StructuredOutput != nil {
-		b, err := json.MarshalIndent(def.StructuredOutput, "", "  ")
-		if err == nil {
-			soJSON = string(b)
-		}
-	}
-
-	// Strip structured_output from displayed YAML so it's only edited via the JSON panel.
-	var m map[string]any
-	if err := yamlpkg.Unmarshal(raw, &m); err == nil {
-		delete(m, "structured_output")
-		if stripped, err := yamlpkg.Marshal(m); err == nil {
-			raw = stripped
-		}
-	}
-
-	data := agentEditorData{
-		Name:                 name,
-		RawYAML:              string(raw),
-		StructuredOutputJSON: soJSON,
-	}
-	h.renderPartial(w, "agent-editor", data)
+	h.renderPartial(w, "agent-editor", agentEditorData{
+		Def:                  def,
+		StructuredOutputJSON: structuredOutputJSON(def),
+	})
 }
 
-// createAgentForm handles form-based agent creation from the web UI.
-func (h *Handler) createAgentForm(w http.ResponseWriter, r *http.Request) {
-	name := r.FormValue("name")
-	systemPrompt := r.FormValue("system_prompt")
-	if name == "" || systemPrompt == "" {
-		http.Error(w, "name and system_prompt are required", http.StatusBadRequest)
-		return
+// newAgentEditor renders a blank editor for creating a new agent.
+func (h *Handler) newAgentEditor(w http.ResponseWriter, r *http.Request) {
+	h.renderPartial(w, "agent-editor-new", agentEditorData{Def: &config.Definition{}})
+}
+
+// saveAgentForm handles PUT /agents/{name} — saves an existing agent via the form UI.
+func (h *Handler) saveAgentForm(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	def := definitionFromForm(r)
+	def.Name = name
+
+	soJSON := r.FormValue("structured_output_json")
+	soEnabled := r.FormValue("structured_output_enabled") == "true"
+	if soEnabled && soJSON != "" {
+		var so config.StructuredOutput
+		if err := json.Unmarshal([]byte(soJSON), &so); err != nil {
+			http.Error(w, "invalid structured output JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		def.StructuredOutput = &so
 	}
 
-	def := &config.Definition{
-		Kind:         "agent",
-		Name:         name,
-		Description:  r.FormValue("description"),
-		Model:        r.FormValue("model"),
-		SystemPrompt: systemPrompt,
-	}
 	if err := def.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -617,71 +598,20 @@ func (h *Handler) createAgentForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return updated agent list partial.
-	h.renderPartial(w, "agent-list-items", agentsPageData{Agents: h.store.ListDefinitions()})
-}
-
-// newAgentEditor renders a blank YAML editor for creating a new agent.
-func (h *Handler) newAgentEditor(w http.ResponseWriter, r *http.Request) {
-	h.renderPartial(w, "agent-editor-new", nil)
-}
-
-// createAgentYaml handles creating a new agent from raw YAML pasted into the blank editor.
-func (h *Handler) createAgentYaml(w http.ResponseWriter, r *http.Request) {
-	rawYAML := r.FormValue("yaml")
-	if rawYAML == "" {
-		http.Error(w, "yaml is required", http.StatusBadRequest)
-		return
-	}
-	if err := h.store.SaveRawDefinition("", []byte(rawYAML)); err != nil {
-		slog.Error("failed to create agent from yaml", "error", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	var def config.Definition
-	if err := yamlpkg.Unmarshal([]byte(rawYAML), &def); err != nil || def.Name == "" {
-		h.renderPartial(w, "agent-list-items", agentsPageData{Agents: h.store.ListDefinitions()})
-		return
-	}
-	raw, _ := h.store.GetRawDefinition(def.Name)
-
-	var soJSON string
-	var savedDef config.Definition
-	if err := yamlpkg.Unmarshal(raw, &savedDef); err == nil && savedDef.StructuredOutput != nil {
-		if b, err := json.MarshalIndent(savedDef.StructuredOutput, "", "  "); err == nil {
-			soJSON = string(b)
-		}
-	}
-	// Strip structured_output from displayed YAML.
-	var m map[string]any
-	if err := yamlpkg.Unmarshal(raw, &m); err == nil {
-		delete(m, "structured_output")
-		if stripped, err := yamlpkg.Marshal(m); err == nil {
-			raw = stripped
-		}
-	}
-
-	h.renderPartial(w, "save-yaml-response", saveYamlData{
-		Editor: agentEditorData{Name: def.Name, RawYAML: string(raw), StructuredOutputJSON: soJSON},
+	saved := h.store.GetDefinition(name)
+	h.renderPartial(w, "save-agent-response", saveYamlData{
+		Editor: agentEditorData{Def: saved, StructuredOutputJSON: structuredOutputJSON(saved)},
 		Agents: h.store.ListDefinitions(),
 	})
 }
 
-// saveAgentYaml handles form-based YAML save from the web UI.
-func (h *Handler) saveAgentYaml(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	yamlStr := r.FormValue("yaml")
+// createAgentFormNew handles POST /agents/form — creates a new agent via the form UI.
+func (h *Handler) createAgentFormNew(w http.ResponseWriter, r *http.Request) {
+	def := definitionFromForm(r)
+	def.Name = r.FormValue("name")
+
 	soJSON := r.FormValue("structured_output_json")
 	soEnabled := r.FormValue("structured_output_enabled") == "true"
-
-	// Parse the submitted YAML into a Definition.
-	var def config.Definition
-	if err := yamlpkg.Unmarshal([]byte(yamlStr), &def); err != nil {
-		http.Error(w, "invalid YAML: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Apply structured output: if enabled and JSON provided, set it; otherwise clear it.
 	if soEnabled && soJSON != "" {
 		var so config.StructuredOutput
 		if err := json.Unmarshal([]byte(soJSON), &so); err != nil {
@@ -689,48 +619,72 @@ func (h *Handler) saveAgentYaml(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		def.StructuredOutput = &so
-	} else {
-		def.StructuredOutput = nil
 	}
 
-	// Marshal back to canonical YAML and save.
-	merged, err := yamlpkg.Marshal(&def)
-	if err != nil {
-		http.Error(w, "failed to marshal YAML: "+err.Error(), http.StatusInternalServerError)
+	if err := def.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.store.SaveRawDefinition(name, merged); err != nil {
-		slog.Error("failed to save yaml", "name", name, "error", err)
+	if err := h.store.SaveDefinition(def); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Re-load and re-split so the editor reflects the saved state.
-	raw, _ := h.store.GetRawDefinition(name)
-	var savedDef config.Definition
-	var soJSONOut string
-	if err := yamlpkg.Unmarshal(raw, &savedDef); err == nil && savedDef.StructuredOutput != nil {
-		if b, err := json.MarshalIndent(savedDef.StructuredOutput, "", "  "); err == nil {
-			soJSONOut = string(b)
-		}
-	}
-	// Strip structured_output from displayed YAML.
-	var m map[string]any
-	if err := yamlpkg.Unmarshal(raw, &m); err == nil {
-		delete(m, "structured_output")
-		if stripped, err := yamlpkg.Marshal(m); err == nil {
-			raw = stripped
-		}
-	}
-	h.renderPartial(w, "save-yaml-response", saveYamlData{
-		Editor: agentEditorData{Name: name, RawYAML: string(raw), StructuredOutputJSON: soJSONOut},
+	saved := h.store.GetDefinition(def.Name)
+	h.renderPartial(w, "save-agent-response", saveYamlData{
+		Editor: agentEditorData{Def: saved, StructuredOutputJSON: structuredOutputJSON(saved)},
 		Agents: h.store.ListDefinitions(),
 	})
+}
+
+func (h *Handler) cloneAgent(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
 type saveYamlData struct {
 	Editor agentEditorData
 	Agents []*config.Definition
+}
+
+// structuredOutputJSON marshals def.StructuredOutput to indented JSON, or returns "" if nil.
+func structuredOutputJSON(def *config.Definition) string {
+	if def == nil || def.StructuredOutput == nil {
+		return ""
+	}
+	b, err := json.MarshalIndent(def.StructuredOutput, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// definitionFromForm builds a Definition from form values.
+// Kind and Name must be set by the caller.
+func definitionFromForm(r *http.Request) *config.Definition {
+	def := &config.Definition{
+		Kind:         config.KindAgent,
+		Description:  r.FormValue("description"),
+		Model:        r.FormValue("model"),
+		SystemPrompt: r.FormValue("system_prompt"),
+		ForceJSON:    r.FormValue("force_json") != "",
+	}
+	if v := r.FormValue("max_turns"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			def.MaxTurns = n
+		}
+	}
+	if v := r.FormValue("max_concurrent_tools"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			def.MaxConcurrentTools = n
+		}
+	}
+	toolsStr := r.FormValue("tools")
+	for _, line := range strings.Split(toolsStr, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			def.Tools = append(def.Tools, t)
+		}
+	}
+	return def
 }
 
 // deleteAgentWeb handles web UI agent deletion.

@@ -341,3 +341,12 @@ function syncStructuredOutput(name) {
 {{template "agent-editor" .Editor}}
 {{end}}
 
+{{define "save-agent-response"}}
+{{/* OOB: refresh agent list in sidebar */}}
+<div id="agent-list" hx-swap-oob="true">
+  {{template "agent-list-items" (dict "Agents" .Agents)}}
+</div>
+{{/* Main: re-render editor */}}
+{{template "agent-editor" .Editor}}
+{{end}}
+
