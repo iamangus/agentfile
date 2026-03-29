@@ -249,6 +249,9 @@ func (rt *Runtime) RunWithHistory(ctx context.Context, def *config.Definition, u
 		// If no tool calls, we're done
 		if len(assistantMsg.ToolCalls) == 0 {
 			content, _ := assistantMsg.Content.(string)
+			if so != nil || def.ForceJSON {
+				content = llm.StripCodeFences(content)
+			}
 			slog.Info("agent run completed", "agent", def.Name, "turns", turn+1)
 			if rl != nil {
 				rl.Completed(turn + 1)

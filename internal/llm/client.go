@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -270,4 +271,86 @@ func (c *OpenAIClient) ChatCompletion(ctx context.Context, req *ChatRequest) (*C
 	}
 
 	return nil, fmt.Errorf("LLM request failed after %d retries: %w", maxRetries, lastErr)
+}
+
+// StripCodeFences extracts raw JSON from an LLM text response.
+// It handles three common wrapping patterns:
+//  1. Markdown code fences: ```json\n{...}\n```
+//  2. Preamble text before JSON: "Here is the result: {...}"
+//  3. A combination of both.
+//
+// If the input is already valid JSON (starts with '{' or '[') it is returned
+// unchanged. If no JSON object or array can be located, the trimmed input is
+// returned as-is.
+func StripCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s[3:], "\n"); idx >= 0 {
+			s = s[3+idx+1:]
+		}
+		s = strings.TrimSuffix(s, "```")
+		s = strings.TrimSpace(s)
+	}
+
+	if len(s) > 0 && (s[0] == '{' || s[0] == '[') {
+		return s
+	}
+
+	// Look for the first '{' or '[' and extract to the matching closing brace.
+	start := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' || s[i] == '[' {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return s
+	}
+
+	open, close := s[start], byte('}')
+	if open == '[' {
+		close = ']'
+	}
+
+	depth := 0
+	inStr := false
+	escape := false
+	end := -1
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && inStr {
+			escape = true
+			continue
+		}
+		if c == '"' {
+			inStr = !inStr
+			continue
+		}
+		if inStr {
+			continue
+		}
+		if c == open {
+			depth++
+		} else if c == close {
+			depth--
+			if depth == 0 {
+				end = i
+				break
+			}
+		}
+	}
+
+	if end < 0 {
+		return s[start:]
+	}
+	return s[start : end+1]
 }

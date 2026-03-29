@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 
@@ -385,14 +384,7 @@ func (a *historyRecorderAdapter) EndToolCall(toolCallID, result string, status a
 		if err != nil {
 			return
 		}
-		resp = strings.TrimSpace(resp)
-		if strings.HasPrefix(resp, "```") {
-			if idx := strings.Index(resp[3:], "\n"); idx >= 0 {
-				resp = resp[3+idx+1:]
-			}
-			resp = strings.TrimSuffix(resp, "```")
-			resp = strings.TrimSpace(resp)
-		}
+		resp = llm.StripCodeFences(resp)
 		var summary ToolCallSummary
 		if err := json.Unmarshal([]byte(resp), &summary); err != nil {
 			return
