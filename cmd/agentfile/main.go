@@ -10,14 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/angoo/agentfile/internal/agent"
-	"github.com/angoo/agentfile/internal/agentlog"
 	"github.com/angoo/agentfile/internal/api"
 	"github.com/angoo/agentfile/internal/config"
-	"github.com/angoo/agentfile/internal/llm"
 	mcpserver "github.com/angoo/agentfile/internal/mcp"
 	"github.com/angoo/agentfile/internal/mcpclient"
 	"github.com/angoo/agentfile/internal/registry"
+	"github.com/angoo/agentfile/internal/temporal"
 	"github.com/angoo/agentfile/internal/web"
 )
 
@@ -25,7 +23,6 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	// Load system config
 	cfg, err := config.LoadSystem("agentfile.yaml")
 	if err != nil {
 		slog.Warn("no agentfile.yaml found, using defaults", "error", err)
@@ -35,15 +32,13 @@ func main() {
 		"listen", cfg.Listen,
 		"definitions_dir", cfg.DefinitionsDir,
 		"mcp_servers", len(cfg.MCPServers),
+		"temporal_host", cfg.Temporal.HostPort,
 	)
 
-	// Create registry (stores agent definitions)
 	reg := registry.New()
 
-	// Create MCP client pool (connects to external MCP servers, discovers tools)
 	pool := mcpclient.NewPool()
 
-	// Connect to configured external MCP servers
 	ctx := context.Background()
 	if len(cfg.MCPServers) > 0 {
 		if err := pool.Connect(ctx, cfg.MCPServers); err != nil {
@@ -53,67 +48,42 @@ func main() {
 		slog.Info("no external MCP servers configured")
 	}
 
-	// Create LLM client (works with any OpenAI-compatible API)
-	llmClient := llm.NewClient(llm.ClientConfig{
-		BaseURL:          cfg.LLM.BaseURL,
-		APIKey:           cfg.LLM.APIKey,
-		DefaultModel:     cfg.LLM.DefaultModel,
-		Headers:          cfg.LLM.Headers,
-		SchemaValidation: cfg.LLM.SchemaValidation,
-	})
+	temporalClient, err := temporal.NewClient(cfg.Temporal.HostPort, cfg.Temporal.Namespace, cfg.Temporal.APIKey)
+	if err != nil {
+		slog.Error("failed to connect to temporal server", "error", err)
+		os.Exit(1)
+	}
+	defer temporalClient.Close()
 
-	// Create agent runtime
-	agentRuntime := agent.NewRuntime(reg, pool, llmClient)
-
-	// Load agent definitions from filesystem
 	loader := config.NewLoader(cfg.DefinitionsDir, reg)
 	if err := loader.LoadAll(); err != nil {
 		slog.Error("failed to load definitions", "error", err)
 		os.Exit(1)
 	}
 
-	// Start filesystem watcher for hot-reloading agent definitions
 	if err := loader.Watch(); err != nil {
 		slog.Warn("failed to start filesystem watcher", "error", err)
 	}
 	defer loader.Close()
 
-	// Set up per-agent run logging (files are truncated so each startup is a fresh session)
-	runLogger, err := agentlog.New("logs", reg.ListAgentNames())
-	if err != nil {
-		slog.Warn("failed to initialise run logger, proceeding without file logging", "error", err)
-	} else {
-		agentRuntime.SetLogger(runLogger)
-		slog.Info("run logging enabled", "dir", "logs")
-	}
-
-	// Create run history manager for tracking API-initiated runs
-	historyManager := api.NewHistoryManager()
-
-	// Set up HTTP mux
 	mux := http.NewServeMux()
 
-	// Health check
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
 
-	// MCP server manager — scoped MCP SSE servers per agent + default
-	mcpManager := mcpserver.NewManager(reg, pool, agentRuntime)
+	mcpManager := mcpserver.NewManager(reg, pool, temporalClient)
 	mcpManager.RegisterRoutes(mux)
 
-	// When external MCP server tools change, invalidate cached MCP servers
 	pool.OnToolsChanged(func() {
 		mcpManager.RefreshAll()
 	})
 
-	// REST API for agents and status
-	apiHandler := api.NewHandler(reg, pool, loader, agentRuntime, historyManager, cfg.SummaryAgent)
+	apiHandler := api.NewHandler(reg, pool, loader, temporalClient)
 	apiHandler.RegisterRoutes(mux)
 
-	// Web UI (chat + agents + runs pages)
-	webHandler, err := web.NewHandler(loader, agentRuntime, pool, historyManager)
+	webHandler, err := web.NewHandler(loader, temporalClient, pool)
 	if err != nil {
 		slog.Error("failed to create web UI handler", "error", err)
 		os.Exit(1)
@@ -125,7 +95,6 @@ func main() {
 		Handler: mux,
 	}
 
-	// Graceful shutdown
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

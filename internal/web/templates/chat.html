@@ -4,229 +4,259 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Chat — agentfile</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/franken-ui@2.1.0/dist/css/core.min.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/franken-ui@2.1.0/dist/css/utilities.min.css" />
-  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frankenstyle@0.3.7/dist/css/frankenstyle-kit.min.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script src="https://unpkg.com/htmx-ext-sse@2.2.3/sse.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/frankenstyle@0.3.7/dist/js/hwc-core.iife.js" type="module"></script>
   <style>
-    html, body { height: 100%; margin: 0; }
+    :root {
+      --uk-primary: oklch(59.1% 0.249 292.7);
+      --uk-primary-f: oklch(100% 0 0);
+      --uk-focus: oklch(66.6% 0.247 292.0);
+    }
+    .dark {
+      --bg-base:    #0f0f11;
+      --bg-sidebar: #0a0a0d;
+      --bg-card:    #18181c;
+      --border:     #27272a;
+      --text-base:  #e4e4e7;
+      --text-muted: #71717a;
+      --purple:     oklch(59.1% 0.249 292.7);
+      --purple-dim: oklch(59.1% 0.249 292.7 / 0.15);
+      --purple-solid: #7c3aed;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg-base); color: var(--text-base); }
 
-    /* CSS sidebar toggle — no JS required */
     #sidebar-toggle { display: none; }
     .page-body {
-      flex: 1;
       display: flex;
       overflow: hidden;
       height: calc(100vh - 52px);
     }
     .sidebar {
-      transition: width 0.2s ease, min-width 0.2s ease;
-      width: 240px;
-      min-width: 240px;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border);
+      width: 260px;
+      min-width: 260px;
       overflow: hidden;
+      transition: width 0.2s ease, min-width 0.2s ease;
     }
     #sidebar-toggle:checked ~ .page-body .sidebar {
-      width: 0;
-      min-width: 0;
-      border-right: none;
+      width: 0; min-width: 0; border-right: none;
     }
+    .sidebar-inner {
+      display: flex; flex-direction: column; height: 100%;
+    }
+
     .sidebar-toggle-btn {
-      flex-shrink: 0;
-      width: 28px; height: 28px;
-      border-radius: 6px;
-      border: 1px solid hsl(var(--border));
-      background: hsl(var(--background));
-      color: hsl(var(--muted-foreground));
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: background 0.15s, color 0.15s;
+      flex-shrink: 0; width: 30px; height: 30px; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--bg-card); color: var(--text-muted);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: background 0.12s, color 0.12s;
     }
-    .sidebar-toggle-btn:hover {
-      background: hsl(var(--muted));
-      color: hsl(var(--foreground));
-    }
+    .sidebar-toggle-btn:hover { background: var(--purple-dim); color: var(--text-base); }
     .sidebar-toggle-btn svg { width: 14px; height: 14px; pointer-events: none; }
 
-    /* Sidebar session row */
+    .sb-section-label {
+      font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #52525b; margin-bottom: 6px; padding: 0 4px;
+    }
     .session-row {
-      display: flex;
-      flex-direction: column;
-      padding: 8px 10px;
-      margin: 2px 6px;
-      border-radius: 8px;
-      cursor: pointer;
-      text-decoration: none;
-      color: inherit;
-      transition: background 0.15s;
+      display: flex; flex-direction: column;
+      padding: 8px 10px; border-radius: 8px;
+      cursor: pointer; text-decoration: none; color: inherit;
+      transition: background 0.12s, border-color 0.12s;
+      border: 1px solid transparent; margin: 2px 0;
     }
-    .session-row:hover { background: hsl(var(--muted) / 0.6); }
-    .session-row.active { background: hsl(var(--muted)); }
+    .session-row:hover { background: var(--bg-card); color: var(--text-base); }
+    .session-row.active {
+      background: var(--purple-dim);
+      border-color: oklch(59.1% 0.249 292.7 / 0.25);
+      color: var(--text-base);
+    }
+    .session-name { font-size: 0.82rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-preview { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
 
-    /* Message bubbles */
-    .msg-user {
-      background: hsl(var(--primary));
-      color: hsl(var(--primary-foreground));
-      border-radius: 18px 18px 4px 18px;
-      padding: 10px 14px;
-      max-width: 72%;
-      font-size: 14px;
-      line-height: 1.5;
-      white-space: pre-wrap;
-      word-break: break-word;
+    .sb-new-form { padding: 12px; border-top: 1px solid var(--border); margin-top: auto; }
+    .sb-input {
+      width: 100%; background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 12px; color: var(--text-base);
+      font-family: inherit; font-size: 0.85rem; outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: none; -webkit-appearance: none;
     }
-    .msg-assistant {
-      background: hsl(var(--muted));
-      color: hsl(var(--foreground));
-      border-radius: 18px 18px 18px 4px;
-      padding: 10px 14px;
-      max-width: 72%;
-      font-size: 14px;
-      line-height: 1.6;
-      word-break: break-word;
+    .sb-input::placeholder { color: #52525b; }
+    .sb-input:focus { border-color: oklch(59.1% 0.249 292.7 / 0.6); box-shadow: 0 0 0 3px oklch(59.1% 0.249 292.7 / 0.1); }
+    .sb-submit {
+      width: 100%; padding: 9px 16px; background: var(--purple-solid); color: #fff;
+      border: none; border-radius: 8px; font-family: inherit; font-size: 0.85rem;
+      font-weight: 600; cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
     }
-    .msg-error {
-      background: hsl(var(--destructive) / 0.15);
-      color: hsl(var(--destructive));
-    }
-    /* Prose styles for rendered markdown inside assistant bubbles */
-    .msg-assistant p { margin: 0 0 0.6em; }
-    .msg-assistant p:last-child { margin-bottom: 0; }
-    .msg-assistant ul, .msg-assistant ol { margin: 0.4em 0 0.6em 1.4em; padding: 0; }
-    .msg-assistant li { margin-bottom: 0.2em; }
-    .msg-assistant h1,.msg-assistant h2,.msg-assistant h3,
-    .msg-assistant h4,.msg-assistant h5,.msg-assistant h6 {
-      font-weight: 600; margin: 0.8em 0 0.3em;
-    }
-    .msg-assistant h1 { font-size: 1.2em; }
-    .msg-assistant h2 { font-size: 1.1em; }
-    .msg-assistant h3 { font-size: 1em; }
-    .msg-assistant code {
-      background: hsl(var(--background) / 0.6);
-      border-radius: 4px;
-      padding: 1px 5px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.85em;
-    }
-    .msg-assistant pre {
-      background: hsl(var(--background) / 0.6);
-      border-radius: 8px;
-      padding: 10px 12px;
-      overflow-x: auto;
-      margin: 0.6em 0;
-    }
-    .msg-assistant pre code { background: none; padding: 0; font-size: 0.85em; }
-    .msg-assistant blockquote {
-      border-left: 3px solid hsl(var(--border));
-      margin: 0.6em 0;
-      padding-left: 10px;
-      color: hsl(var(--muted-foreground));
-    }
-    .msg-assistant a { color: hsl(var(--primary)); text-decoration: underline; }
-    .msg-assistant hr { border: none; border-top: 1px solid hsl(var(--border)); margin: 0.8em 0; }
-    .msg-assistant table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.9em; }
-    .msg-assistant th, .msg-assistant td {
-      border: 1px solid hsl(var(--border));
-      padding: 4px 8px;
-      text-align: left;
-    }
-    .msg-assistant th { background: hsl(var(--background) / 0.4); font-weight: 600; }
+    .sb-submit:hover { opacity: 0.88; }
+    .sb-submit:active { transform: scale(0.97); }
+    .sb-submit svg { width: 14px; height: 14px; }
 
-    /* Thinking indicator */
-    @keyframes pulse-text { 0%,100%{opacity:.5} 50%{opacity:1} }
-    .thinking-status {
-      display: inline-block;
-      animation: pulse-text 1.4s ease-in-out infinite;
-      font-style: italic;
-      font-size: 13px;
-      color: hsl(var(--muted-foreground));
+    .chat { display: flex; flex-direction: column; height: 100%; overflow: hidden; flex: 1; }
+    .chat-head {
+      padding: 14px 24px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px;
+      background: var(--bg-base); flex-shrink: 0;
+    }
+    .chat-head-icon {
+      width: 34px; height: 34px; border-radius: 9px;
+      background: var(--purple-dim); border: 1px solid oklch(59.1% 0.249 292.7 / 0.4);
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .chat-head-icon svg { width: 17px; height: 17px; color: var(--purple); }
+    .chat-head-name { font-size: 0.95rem; font-weight: 600; color: var(--text-base); }
+    .chat-head-badge {
+      font-size: 0.7rem; font-weight: 500;
+      background: var(--purple-dim); color: oklch(70% 0.2 292.0);
+      border: 1px solid oklch(59.1% 0.249 292.7 / 0.3);
+      padding: 2px 8px; border-radius: 20px; letter-spacing: 0.02em;
     }
 
-    /* Auto-scroll anchor */
+    .chat-body {
+      flex: 1; overflow-y: auto; padding: 28px 24px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .chat-body::-webkit-scrollbar { width: 6px; }
+    .chat-body::-webkit-scrollbar-track { background: transparent; }
+    .chat-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .msg-row { display: flex; }
+    .msg-right { justify-content: flex-end; }
+    .msg-left  { justify-content: flex-start; }
+
+    .bubble { max-width: 70%; padding: 12px 16px; border-radius: 14px; line-height: 1.65; font-size: 0.9rem; word-break: break-word; }
+    .bubble p { margin: 0.4em 0; }
+    .bubble p:first-child { margin-top: 0; }
+    .bubble p:last-child { margin-bottom: 0; }
+    .bubble pre { background: rgba(0,0,0,0.35); border: 1px solid var(--border); padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 0.82rem; margin: 8px 0; }
+    .bubble code { font-size: 0.85em; }
+    .bubble :not(pre) > code { background: rgba(124,58,237,0.18); color: oklch(75% 0.18 292.0); padding: 1px 5px; border-radius: 4px; }
+    .bubble ul, .bubble ol { padding-left: 1.4em; margin: 0.4em 0; }
+    .bubble h1, .bubble h2, .bubble h3 { margin: 0.6em 0 0.3em; font-weight: 600; }
+    .bubble blockquote { border-left: 3px solid var(--border); margin: 0.6em 0; padding-left: 10px; color: var(--text-muted); }
+    .bubble a { color: var(--purple); text-decoration: underline; }
+    .bubble hr { border: none; border-top: 1px solid var(--border); margin: 0.8em 0; }
+    .bubble table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.9em; }
+    .bubble th, .bubble td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+    .bubble th { background: rgba(0,0,0,0.2); font-weight: 600; }
+
+    .bubble-user {
+      background: var(--purple-solid); color: #fff;
+      border-bottom-right-radius: 4px;
+      box-shadow: 0 2px 12px oklch(59.1% 0.249 292.7 / 0.3);
+    }
+    .bubble-bot {
+      background: var(--bg-card); color: var(--text-base);
+      border: 1px solid var(--border); border-bottom-left-radius: 4px;
+    }
+    .bubble-bot pre { background: rgba(0,0,0,0.4); }
+    .msg-error { background: oklch(50% 0.2 25 / 0.15) !important; color: oklch(65% 0.2 25) !important; border-color: oklch(50% 0.2 25 / 0.3) !important; }
+
+    .thinking-bubble {
+      background: var(--bg-card); border: 1px solid var(--border); border-bottom-left-radius: 4px;
+      padding: 14px 18px; border-radius: 14px;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .thinking-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted);
+      animation: thinkanim 1.4s infinite both;
+    }
+    .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes thinkanim {
+      0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
+      40%           { opacity: 1;   transform: scale(1.15); }
+    }
+
     .scroll-anchor { overflow-anchor: auto; height: 1px; }
 
-    /* Chat input */
-    .chat-input-area {
-      border-top: 1px solid hsl(var(--border));
-      padding: 12px 16px;
-      background: hsl(var(--background));
+    .chat-foot {
+      padding: 16px 24px; border-top: 1px solid var(--border);
+      background: var(--bg-base); flex-shrink: 0;
     }
-    .chat-input-wrap {
-      display: flex;
-      gap: 8px;
-      align-items: flex-end;
-      background: hsl(var(--muted) / 0.5);
-      border: 1px solid hsl(var(--border));
-      border-radius: 12px;
-      padding: 6px 6px 6px 14px;
-      transition: border-color 0.15s;
+    .input-wrap {
+      display: flex; gap: 10px; align-items: flex-end;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 10px 10px 10px 16px;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .chat-input-wrap:focus-within { border-color: hsl(var(--primary)); }
-    .chat-input {
-      flex: 1;
-      background: transparent;
-      border: none;
-      outline: none;
-      font-size: 14px;
-      color: hsl(var(--foreground));
-      resize: none;
-      max-height: 120px;
-      line-height: 1.5;
-      padding: 4px 0;
+    .input-wrap:focus-within { border-color: oklch(59.1% 0.249 292.7 / 0.6); box-shadow: 0 0 0 3px oklch(59.1% 0.249 292.7 / 0.1); }
+    .input-wrap textarea {
+      flex: 1; resize: none; background: transparent; border: none; outline: none;
+      color: var(--text-base); font-family: inherit; font-size: 0.9rem;
+      line-height: 1.6; max-height: 140px; overflow-y: auto;
     }
-    .chat-input::placeholder { color: hsl(var(--muted-foreground)); }
+    .input-wrap textarea::placeholder { color: var(--text-muted); }
     .send-btn {
-      flex-shrink: 0;
-      width: 34px; height: 34px;
-      border-radius: 8px;
-      border: none;
-      background: hsl(var(--primary));
-      color: hsl(var(--primary-foreground));
-      cursor: pointer;
+      flex-shrink: 0; width: 36px; height: 36px; border-radius: 8px;
+      background: var(--purple-solid); border: none; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, transform 0.1s; color: #fff;
     }
     .send-btn:hover { opacity: 0.85; }
+    .send-btn:active { transform: scale(0.93); }
     .send-btn svg { width: 16px; height: 16px; }
     .htmx-request .send-btn { opacity: 0.5; pointer-events: none; }
+
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%; color: var(--text-muted);
+    }
+    .empty-icon {
+      width: 56px; height: 56px; border-radius: 14px;
+      background: var(--purple-dim); border: 1px solid oklch(59.1% 0.249 292.7 / 0.4);
+      display: flex; align-items: center; justify-content: center; margin-bottom: 28px;
+    }
+    .empty-icon svg { width: 28px; height: 28px; color: var(--purple); }
+    .empty-title { font-size: 0.95rem; font-weight: 600; color: var(--text-base); margin-bottom: 4px; }
+    .empty-sub { font-size: 0.82rem; }
   </style>
 </head>
-<body class="bg-background text-foreground flex flex-col min-h-screen">
+<body>
 
-<!-- CSS sidebar toggle checkbox (no JS) -->
 <input type="checkbox" id="sidebar-toggle" />
 
 {{template "navbar" .}}
 
 <div class="page-body">
-  <!-- Sidebar -->
-  <aside class="sidebar border-r flex flex-col shrink-0 bg-background">
-    <div class="px-3 py-3 border-b">
-      <form
-        hx-post="/chat/sessions"
-        hx-target="#chat-main"
-        hx-swap="innerHTML"
-        hx-push-url="true"
-        class="flex gap-2"
-      >
-        <select name="agent" class="uk-select text-xs flex-1" style="border-radius: 6px; height: 34px; padding: 0 8px;">
-          {{range .Agents}}
-          <option value="{{.Name}}">{{.Name}}</option>
-          {{else}}
-          <option disabled>No agents</option>
-          {{end}}
-        </select>
-        <button type="submit" class="uk-button uk-button-primary text-xs shrink-0" style="border-radius: 6px; padding: 0 12px; height: 34px;">
-          + Chat
-        </button>
-      </form>
-    </div>
-    <div id="session-list" class="flex-1 overflow-y-auto py-2">
-      {{template "session-list" .}}
+  <aside class="sidebar">
+    <div class="sidebar-inner">
+      <div style="padding: 16px 12px 10px;">
+        <div class="sb-section-label">New Chat</div>
+        <form hx-post="/chat/sessions" hx-target="#chat-main" hx-swap="innerHTML" hx-push-url="true" style="display:flex; gap:6px; margin-top:6px;">
+          <select name="agent" class="sb-input" style="flex:1;">
+            {{range .Agents}}
+            <option value="{{.Name}}">{{.Name}}</option>
+            {{else}}
+            <option disabled>No agents</option>
+            {{end}}
+          </select>
+          <button type="submit" class="sb-submit" style="width:auto; padding: 8px 14px;">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+          </button>
+        </form>
+      </div>
+      <div style="padding: 0 12px;">
+        <div class="sb-section-label">Sessions</div>
+      </div>
+      <div id="session-list" style="flex:1; overflow-y:auto; padding: 4px 12px;">
+        {{template "session-list" .}}
+      </div>
     </div>
   </aside>
 
-  <!-- Main content -->
-  <main id="chat-main" class="flex-1 flex flex-col overflow-hidden">
+  <main id="chat-main" class="chat">
     {{template "chat-content" .}}
   </main>
 </div>
@@ -244,48 +274,43 @@
   hx-push-url="/chat?session={{.ID}}"
   class="session-row {{if and $.Current (eq $.Current.ID .ID)}}active{{end}}"
 >
-  <span class="font-medium text-sm truncate">{{.AgentName}}</span>
-  <span class="text-xs text-muted-foreground mt-0.5">{{len .Messages}} messages</span>
+  <span class="session-name">{{.AgentName}}</span>
+  <span class="session-preview">{{len .Messages}} messages</span>
 </a>
 {{else}}
-<div class="px-4 py-8 text-center">
-  <p class="text-xs text-muted-foreground">No chats yet.</p>
-</div>
+<div style="padding: 16px 4px; color: #52525b; font-size: 0.82rem;">No chats yet</div>
 {{end}}
 {{end}}
 
 {{define "chat-content"}}
 {{if .Current}}
-<div class="flex flex-col h-full">
-  <!-- Chat header -->
-  <div class="border-b px-4 py-3 flex items-center gap-3 shrink-0 bg-background">
+<div style="display:flex; flex-direction:column; height:100%;">
+  <div class="chat-head">
     <label for="sidebar-toggle" class="sidebar-toggle-btn" aria-label="Toggle sidebar">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>
       </svg>
     </label>
-    <span class="uk-badge" style="border-radius: 6px; padding: 3px 8px; font-size: 11px;">
-      {{.Current.AgentName}}
-    </span>
-    <span class="text-xs text-muted-foreground">{{len .Current.Messages}} messages</span>
+    <div class="chat-head-icon">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
+      </svg>
+    </div>
+    <span class="chat-head-name">{{.Current.AgentName}}</span>
+    <span class="chat-head-badge">{{len .Current.Messages}} messages</span>
   </div>
 
-  <!-- Messages -->
-  <div
-    id="message-list"
-    class="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4"
-  >
+  <div id="message-list" class="chat-body">
     {{template "messages" .Current.Messages}}
-    {{/* If a run is already active when the page loads, reconnect via SSE */}}
     {{if .ActiveRunID}}
     <div id="run-{{.ActiveRunID}}"
          hx-ext="sse"
          sse-connect="/chat/runs/{{.ActiveRunID}}/events"
          sse-swap="done"
          hx-swap="outerHTML">
-      <div class="flex justify-start">
-        <div class="msg-assistant">
-          <span class="thinking-status" sse-swap="status" hx-swap="innerHTML">Reconnecting…</span>
+      <div class="msg-row msg-left">
+        <div class="thinking-bubble">
+          <div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div>
         </div>
       </div>
     </div>
@@ -293,28 +318,25 @@
     <div class="scroll-anchor"></div>
   </div>
 
-  <!-- Input -->
-  <div class="chat-input-area shrink-0">
+  <div class="chat-foot">
     <form
       id="chat-form-{{.Current.ID}}"
       hx-post="/chat/sessions/{{.Current.ID}}/messages"
       hx-target="#message-list"
       hx-swap="beforeend"
     >
-      <div class="chat-input-wrap">
-        <input
+      <div class="input-wrap">
+        <textarea
           name="message"
-          type="text"
-          placeholder="Message {{.Current.AgentName}}…"
-          class="chat-input"
-          autocomplete="off"
+          rows="1"
+          placeholder="Message {{.Current.AgentName}}..."
           required
-        />
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.closest('form').requestSubmit();}"
+          oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,140)+'px';"
+        ></textarea>
         <button type="submit" class="send-btn" aria-label="Send">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
           </svg>
         </button>
       </div>
@@ -322,22 +344,22 @@
   </div>
 </div>
 {{else}}
-<div class="flex flex-col h-full">
-  <div class="border-b px-4 py-3 flex items-center gap-3 shrink-0 bg-background">
+<div style="display:flex; flex-direction:column; height:100%;">
+  <div class="chat-head">
     <label for="sidebar-toggle" class="sidebar-toggle-btn" aria-label="Toggle sidebar">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>
       </svg>
     </label>
   </div>
-  <div class="flex-1 flex items-center justify-center">
-    <div class="text-center max-w-xs">
-      <div class="text-muted-foreground/30 text-5xl mb-4">💬</div>
-      <p class="text-sm font-medium text-foreground mb-1">No chat selected</p>
-      <p class="text-xs text-muted-foreground">
-        Choose an agent and start a chat using the panel on the left.
-      </p>
+  <div class="empty-state">
+    <div class="empty-icon">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      </svg>
     </div>
+    <p class="empty-title">No chat selected</p>
+    <p class="empty-sub">Choose an agent and start a chat from the sidebar.</p>
   </div>
 </div>
 {{end}}
@@ -346,46 +368,39 @@
 {{define "messages"}}
 {{range .}}
 {{if eq .Role "user"}}
-<div class="flex justify-end">
-  <div class="msg-user">{{.Content}}</div>
+<div class="msg-row msg-right">
+  <div class="bubble bubble-user">{{.Content}}</div>
 </div>
 {{else}}
-<div class="flex justify-start">
-  <div class="msg-assistant">{{renderMarkdown .Content}}</div>
+<div class="msg-row msg-left">
+  <div class="bubble bubble-bot">{{renderMarkdown .Content}}</div>
 </div>
 {{end}}
 {{end}}
 {{end}}
 
-{{/* Returned by POST /chat/sessions — chat-content + OOB session list update */}}
 {{define "new-session-response"}}
-{{/* OOB: refresh session list in sidebar */}}
 <div id="session-list" hx-swap-oob="true">
   {{template "session-list" .}}
 </div>
-{{/* Main body (swapped into #chat-main): open the new chat */}}
 {{template "chat-content" .}}
 {{end}}
 
-{{/* Returned by POST /chat/sessions/{id}/messages — appended to #message-list */}}
 {{define "post-message-response"}}
-{{/* OOB: user bubble appended first */}}
 <div hx-swap-oob="beforeend:#message-list">
-  <div class="flex justify-end">
-    <div class="msg-user">{{.Content}}</div>
+  <div class="msg-row msg-right">
+    <div class="bubble bubble-user">{{.Content}}</div>
   </div>
 </div>
-{{/* Main body: thinking container with SSE — appended second by form's hx-swap="beforeend" */}}
 <div id="run-{{.RunID}}"
      hx-ext="sse"
      sse-connect="/chat/runs/{{.RunID}}/events"
      sse-swap="done"
      hx-swap="outerHTML">
-  <div class="flex justify-start">
-    <div class="msg-assistant">
-      <span class="thinking-status" sse-swap="status" hx-swap="innerHTML">Thinking…</span>
+  <div class="msg-row msg-left">
+    <div class="thinking-bubble">
+      <div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div>
     </div>
   </div>
 </div>
 {{end}}
-

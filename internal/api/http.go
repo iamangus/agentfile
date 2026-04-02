@@ -1,22 +1,21 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
-	"github.com/google/uuid"
+	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/angoo/agentfile/internal/agent"
 	"github.com/angoo/agentfile/internal/config"
 	"github.com/angoo/agentfile/internal/llm"
 	"github.com/angoo/agentfile/internal/mcpclient"
 	"github.com/angoo/agentfile/internal/registry"
+	"github.com/angoo/agentfile/internal/temporal"
 )
 
-// DefinitionStore persists and retrieves agent definitions.
 type DefinitionStore interface {
 	SaveDefinition(def *config.Definition) error
 	DeleteDefinition(name string) error
@@ -26,31 +25,22 @@ type DefinitionStore interface {
 	SaveRawDefinition(name string, data []byte) error
 }
 
-// Handler serves the REST API.
 type Handler struct {
-	store            DefinitionStore
-	reg              *registry.Registry
-	pool             *mcpclient.Pool
-	agentRuntime     *agent.Runtime
-	runs             *RunManager
-	history          *HistoryManager
-	summaryAgentName string
+	store    DefinitionStore
+	reg      *registry.Registry
+	pool     *mcpclient.Pool
+	temporal *temporal.Client
 }
 
-// NewHandler creates a new API handler.
-func NewHandler(reg *registry.Registry, pool *mcpclient.Pool, store DefinitionStore, agentRuntime *agent.Runtime, history *HistoryManager, summaryAgentName string) *Handler {
+func NewHandler(reg *registry.Registry, pool *mcpclient.Pool, store DefinitionStore, temporalClient *temporal.Client) *Handler {
 	return &Handler{
-		store:            store,
-		reg:              reg,
-		pool:             pool,
-		agentRuntime:     agentRuntime,
-		runs:             NewRunManager(),
-		history:          history,
-		summaryAgentName: summaryAgentName,
+		store:    store,
+		reg:      reg,
+		pool:     pool,
+		temporal: temporalClient,
 	}
 }
 
-// RegisterRoutes registers the API routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/agents", h.listAgents)
 	mux.HandleFunc("GET /api/v1/agents/{name}", h.getAgent)
@@ -59,12 +49,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/agents/{name}", h.updateAgentRaw)
 	mux.HandleFunc("DELETE /api/v1/agents/{name}", h.deleteAgent)
 	mux.HandleFunc("POST /api/v1/agents/{name}/run", h.runAgent)
-	mux.HandleFunc("GET /api/v1/runs", h.listRuns)
-	mux.HandleFunc("GET /api/v1/runs/{id}", h.getRun)
-	mux.HandleFunc("GET /api/v1/runs/{id}/history", h.getRunHistory)
-	mux.HandleFunc("POST /api/v1/runs/{id}/cancel", h.cancelRun)
 	mux.HandleFunc("GET /api/v1/tools", h.listTools)
 	mux.HandleFunc("GET /api/v1/status", h.getStatus)
+	mux.HandleFunc("POST /api/internal/mcp/call", h.mcpProxyCall)
 
 	slog.Info("API routes registered", "prefix", "/api/v1")
 }
@@ -155,7 +142,6 @@ func (h *Handler) getStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-// runAgentRequest is the JSON body for POST /api/v1/agents/{name}/run.
 type runAgentRequest struct {
 	Message        string                   `json:"message"`
 	History        []llm.Message            `json:"history,omitempty"`
@@ -163,7 +149,6 @@ type runAgentRequest struct {
 	ResponseSchema *config.StructuredOutput `json:"response_schema,omitempty"`
 }
 
-// runAgentResponse is the JSON body returned for a successfully queued run.
 type runAgentResponse struct {
 	RunID string `json:"run_id"`
 }
@@ -171,7 +156,7 @@ type runAgentResponse struct {
 func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	def, ok := h.reg.GetAgentDef(name)
+	_, ok := h.reg.GetAgentDef(name)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent not found: " + name})
 		return
@@ -187,210 +172,20 @@ func (h *Handler) runAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate a unique run ID and create a cancellable context for this run.
-	runID := uuid.New().String()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Connect any ephemeral MCP servers provided in the request.
-	// They are closed once the run goroutine exits, regardless of outcome.
-	ephemeral := make([]*mcpclient.EphemeralConn, 0, len(req.MCPServers))
-	for _, srv := range req.MCPServers {
-		conn, err := mcpclient.ConnectEphemeral(r.Context(), srv)
-		if err != nil {
-			slog.Error("failed to connect ephemeral MCP server", "name", srv.Name, "url", srv.URL, "error", err)
-			cancel()
-			for _, c := range ephemeral {
-				c.Close()
-			}
-			errMsg := "failed to connect MCP server " + srv.Name + ": " + err.Error()
-			writeJSON(w, http.StatusBadGateway, map[string]string{
-				"error": errMsg,
-			})
-			return
-		}
-		ephemeral = append(ephemeral, conn)
-	}
-
-	// Build tool list for history after ephemeral connections are established
-	// so dynamic tools are included.
-	toolNames := h.agentRuntime.GetToolNames(def, ephemeral)
-
-	// Register the run before starting the goroutine so it is immediately
-	// visible to any polling callers.
-	h.runs.Create(runID, name, cancel)
-	h.history.Create(runID, name, def.Model, req.Message, toolNames, cancel)
-
-	// Snapshot inputs before handing off to the goroutine.
-	defSnap := def
-	msgSnap := req.Message
-	historySnap := req.History
-	responseSchemaSnap := req.ResponseSchema
-
-	go func() {
-		defer func() {
-			for _, c := range ephemeral {
-				c.Close()
-			}
-			cancel() // ensure context resources are always released
-		}()
-
-		h.runs.SetRunning(runID)
-		h.history.SetRunning(runID)
-
-		// Create a history adapter that implements agent.HistoryRecorder
-		hr := &historyRecorderAdapter{
-			hm:               h.history,
-			runID:            runID,
-			runtime:          h.agentRuntime,
-			summaryAgentName: h.summaryAgentName,
-		}
-
-		result, _, err := h.agentRuntime.RunWithHistory(ctx, defSnap, msgSnap, nil, hr, responseSchemaSnap, historySnap, ephemeral...)
-		if err != nil {
-			if ctx.Err() != nil {
-				// Context was canceled externally (e.g. via POST /runs/{id}/cancel).
-				// RunManager.Cancel has already set the status; nothing more to do.
-				slog.Info("agent run canceled", "run_id", runID, "agent", name)
-				return
-			}
-			slog.Error("agent run failed", "run_id", runID, "agent", name, "error", err)
-			h.runs.SetFailed(runID, err.Error())
-			h.history.SetFailed(runID, err.Error())
-			return
-		}
-
-		slog.Info("agent run completed", "run_id", runID, "agent", name)
-		h.runs.SetCompleted(runID, result)
-		h.history.SetCompleted(runID, result)
-	}()
-
-	writeJSON(w, http.StatusAccepted, runAgentResponse{RunID: runID})
-}
-
-func (h *Handler) getRun(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	info := h.runs.Get(id)
-	if info == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "run not found: " + id})
-		return
-	}
-	writeJSON(w, http.StatusOK, info)
-}
-
-func (h *Handler) cancelRun(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if !h.runs.Cancel(id) {
-		info := h.runs.Get(id)
-		if info == nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "run not found: " + id})
-			return
-		}
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": "run is already in terminal state: " + string(info.Status),
-		})
-		return
-	}
-	h.history.Cancel(id)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "canceled"})
-}
-
-func (h *Handler) listRuns(w http.ResponseWriter, r *http.Request) {
-	agentFilter := r.URL.Query().Get("agent")
-	statusFilter := RunStatus(r.URL.Query().Get("status"))
-	runs := h.history.List(agentFilter, statusFilter)
-	writeJSON(w, http.StatusOK, runs)
-}
-
-func (h *Handler) getRunHistory(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	hist := h.history.Get(id)
-	if hist == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "run not found: " + id})
-		return
-	}
-	writeJSON(w, http.StatusOK, hist)
-}
-
-type historyRecorderAdapter struct {
-	hm               *HistoryManager
-	runID            string
-	runtime          *agent.Runtime
-	summaryAgentName string
-}
-
-func (a *historyRecorderAdapter) StartTurn(turnNum int) {
-	a.hm.StartTurn(a.runID, turnNum)
-}
-
-func (a *historyRecorderAdapter) RecordRequest(requestJSON string) {
-	a.hm.RecordRequest(a.runID, requestJSON)
-}
-
-func (a *historyRecorderAdapter) RecordResponse(responseJSON string) {
-	a.hm.RecordResponse(a.runID, responseJSON)
-}
-
-func (a *historyRecorderAdapter) EndTurn() {
-	a.hm.EndTurn(a.runID)
-}
-
-func (a *historyRecorderAdapter) StartToolCall(toolCallID, toolName, arguments string) {
-	a.hm.StartToolCall(a.runID, toolCallID, toolName, arguments)
-}
-
-func (a *historyRecorderAdapter) EndToolCall(toolCallID, result string, status agent.ToolCallStatus, errMsg string) {
-	var s ToolCallStatus
-	switch status {
-	case agent.ToolCallStatusSuccess:
-		s = ToolCallStatusSuccess
-	case agent.ToolCallStatusError:
-		s = ToolCallStatusError
-	}
-	// Capture name/arguments before committing (they're in currentToolCalls under the lock).
-	var toolName, arguments string
-	if a.summaryAgentName != "" && a.runtime != nil {
-		a.hm.mu.RLock()
-		if h, ok := a.hm.runs[a.runID]; ok {
-			if tc, ok := h.currentToolCalls[toolCallID]; ok {
-				toolName = tc.Name
-				arguments = tc.Arguments
-			}
-		}
-		a.hm.mu.RUnlock()
-	}
-
-	a.hm.EndToolCall(a.runID, toolCallID, result, s, errMsg)
-
-	if a.summaryAgentName == "" || a.runtime == nil || toolName == "" {
+	workflowID, err := h.temporal.ExecuteWorkflow(r.Context(), temporal.RunAgentParams{
+		AgentName:      name,
+		Message:        req.Message,
+		History:        req.History,
+		MCPServers:     req.MCPServers,
+		ResponseSchema: req.ResponseSchema,
+	})
+	if err != nil {
+		slog.Error("failed to start temporal workflow", "agent", name, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to start workflow: " + err.Error()})
 		return
 	}
 
-	runID := a.runID
-	hm := a.hm
-	rt := a.runtime
-	agentName := a.summaryAgentName
-	resultSnap := result
-	tcID := toolCallID
-
-	go func() {
-		def, ok := rt.GetAgentDef(agentName)
-		if !ok {
-			return
-		}
-		prompt := "Tool: " + toolName +
-			"\nArguments: " + truncateStr(arguments, 500) +
-			"\nResult: " + truncateStr(resultSnap, 1000)
-		resp, err := rt.Run(context.Background(), def, prompt)
-		if err != nil {
-			return
-		}
-		resp = llm.StripCodeFences(resp)
-		var summary ToolCallSummary
-		if err := json.Unmarshal([]byte(resp), &summary); err != nil {
-			return
-		}
-		hm.SetToolCallSummary(runID, tcID, summary)
-	}()
+	writeJSON(w, http.StatusAccepted, runAgentResponse{RunID: workflowID})
 }
 
 func (h *Handler) getRawAgent(w http.ResponseWriter, r *http.Request) {
@@ -420,16 +215,46 @@ func (h *Handler) updateAgentRaw(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
-// truncateStr shortens s to at most n bytes, appending "…" if truncated.
-func truncateStr(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+type mcpCallRequest struct {
+	Server    string         `json:"server"`
+	Tool      string         `json:"tool"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+type mcpCallResponse struct {
+	Content string `json:"content"`
+	IsError bool   `json:"is_error"`
+}
+
+func (h *Handler) mcpProxyCall(w http.ResponseWriter, r *http.Request) {
+	var req mcpCallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	result, err := h.pool.CallTool(r.Context(), req.Server, req.Tool, req.Arguments)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	content := extractMCPText(result)
+	writeJSON(w, http.StatusOK, mcpCallResponse{Content: content, IsError: result.IsError})
+}
+
+func extractMCPText(result *mcp.CallToolResult) string {
+	var parts []string
+	for _, c := range result.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			parts = append(parts, tc.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }

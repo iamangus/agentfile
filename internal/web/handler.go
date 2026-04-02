@@ -14,17 +14,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/angoo/agentfile/internal/agent"
-	"github.com/angoo/agentfile/internal/api"
 	"github.com/angoo/agentfile/internal/config"
 	"github.com/angoo/agentfile/internal/llm"
 	"github.com/angoo/agentfile/internal/mcpclient"
+	"github.com/angoo/agentfile/internal/temporal"
 )
 
 //go:embed templates/*.html
 var templateFS embed.FS
 
-// DefinitionStore is the subset of config.Loader used by the web handler.
 type DefinitionStore interface {
 	ListDefinitions() []*config.Definition
 	GetRawDefinition(name string) ([]byte, error)
@@ -34,44 +32,38 @@ type DefinitionStore interface {
 	SaveRawDefinition(name string, data []byte) error
 }
 
-// Message is a single turn in a chat.
 type Message struct {
-	Role    string // "user" or "assistant"
+	Role    string
 	Content string
 	Time    time.Time
 }
 
-// Session is an in-memory chat session.
 type Session struct {
 	ID          string
 	AgentName   string
-	Messages    []Message     // display history (user + assistant text only)
-	LLMHistory  []llm.Message // full LLM message history (excluding system prompt) for context replay
+	Messages    []Message
+	LLMHistory  []llm.Message
 	CreatedAt   time.Time
-	ActiveRunID string // set while an agent run is in progress
+	ActiveRunID string
 }
 
-// runEvent is a single SSE event for an in-flight agent run.
 type runEvent struct {
-	typ  string // "status" | "done" | "error"
+	typ  string
 	data string
 }
 
-// agentRun tracks an in-flight agent run with fan-out to multiple SSE clients.
 type agentRun struct {
 	mu     sync.Mutex
-	events []runEvent      // append-only replay buffer
-	subs   []chan runEvent // one channel per connected SSE client
-	closed bool            // true once the terminal event has been published
+	events []runEvent
+	subs   []chan runEvent
+	closed bool
 }
 
-// publish appends the event to the replay buffer and fans it out to all subscribers.
 func (r *agentRun) publish(evt runEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, evt)
 	for _, ch := range r.subs {
-		// Non-blocking: each subscriber channel is buffered; if full, drop rather than block the agent.
 		select {
 		case ch <- evt:
 		default:
@@ -86,17 +78,13 @@ func (r *agentRun) publish(evt runEvent) {
 	}
 }
 
-// subscribe returns a channel that will receive all future events.
-// Any events already in the replay buffer are sent first.
 func (r *agentRun) subscribe() (chan runEvent, func()) {
 	ch := make(chan runEvent, 64)
 	r.mu.Lock()
-	// Replay buffered events so a late-joining client catches up.
 	for _, evt := range r.events {
 		ch <- evt
 	}
 	if r.closed {
-		// Run already finished — close immediately after replay.
 		close(ch)
 		r.mu.Unlock()
 		return ch, func() {}
@@ -117,34 +105,19 @@ func (r *agentRun) subscribe() (chan runEvent, func()) {
 	return ch, unsubscribe
 }
 
-// runReporter implements agent.Reporter by publishing to an agentRun.
-type runReporter struct {
-	run *agentRun
-}
-
-func (r *runReporter) Update(status string) {
-	r.run.publish(runEvent{typ: "status", data: status})
-}
-
-// Handler serves the web UI pages.
 type Handler struct {
 	store    DefinitionStore
 	pool     *mcpclient.Pool
-	runtime  *agent.Runtime
+	temporal *temporal.Client
 	tmpl     *template.Template
 	mu       sync.Mutex
 	sessions map[string]*Session
 	runs     map[string]*agentRun
-	history  *api.HistoryManager
 }
 
-// NewHandler creates a new web UI handler.
-func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.Pool, history *api.HistoryManager) (*Handler, error) {
+func NewHandler(store DefinitionStore, temporalClient *temporal.Client, pool *mcpclient.Pool) (*Handler, error) {
 	funcMap := template.FuncMap{
 		"renderMarkdown": renderMarkdown,
-		// dict builds a map[string]any for passing multiple named values to sub-templates.
-		// Keys must be strings and arguments must be provided in key-value pairs.
-		// Odd-length or non-string-key arguments are silently skipped.
 		"dict": func(kvs ...any) map[string]any {
 			m := make(map[string]any, len(kvs)/2)
 			for i := 0; i+1 < len(kvs); i += 2 {
@@ -190,15 +163,13 @@ func NewHandler(store DefinitionStore, runtime *agent.Runtime, pool *mcpclient.P
 	return &Handler{
 		store:    store,
 		pool:     pool,
-		runtime:  runtime,
+		temporal: temporalClient,
 		tmpl:     tmpl,
 		sessions: make(map[string]*Session),
 		runs:     make(map[string]*agentRun),
-		history:  history,
 	}, nil
 }
 
-// RegisterRoutes registers the web UI routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", h.redirectToChat)
 	mux.HandleFunc("GET /chat", h.chatPage)
@@ -218,18 +189,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tools", h.toolsPage)
 	mux.HandleFunc("GET /tools/list", h.toolListPartial)
 	mux.HandleFunc("POST /tools/generate", h.toolGeneratePartial)
-	mux.HandleFunc("GET /runs", h.runsPage)
-	mux.HandleFunc("GET /runs/list", h.runsListPartial)
-	mux.HandleFunc("GET /runs/{id}", h.runDetailPage)
-	mux.HandleFunc("GET /runs/{id}/events", h.runHistoryEvents)
 	slog.Info("web UI routes registered")
 }
 
 func (h *Handler) redirectToChat(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/chat", http.StatusFound)
 }
-
-// --- Chat page ---
 
 type chatPageData struct {
 	ActivePage  string
@@ -261,8 +226,6 @@ func (h *Handler) chatPage(w http.ResponseWriter, r *http.Request) {
 		ActiveRunID: activeRunID,
 	}
 
-	// HTMX partial request (e.g. clicking a session in the sidebar) —
-	// return only the chat content area, not the full page.
 	if r.Header.Get("HX-Request") == "true" {
 		h.renderPartial(w, "chat-content", data)
 		return
@@ -299,13 +262,13 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 			Sessions:   sessions,
 			Current:    session,
 		}
-		// Include OOB session-list update so the sidebar refreshes without JS.
 		h.renderPartial(w, "new-session-response", data)
 		return
 	}
 
 	http.Redirect(w, r, "/chat?session="+id, http.StatusSeeOther)
 }
+
 func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	content := r.FormValue("message")
@@ -328,7 +291,6 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	session.Messages = append(session.Messages, userMsg)
 	h.mu.Unlock()
 
-	// Look up agent definition
 	defs := h.store.ListDefinitions()
 	var def *config.Definition
 	for _, d := range defs {
@@ -338,7 +300,6 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create a run and start the agent asynchronously.
 	runID := newID()
 	run := &agentRun{}
 
@@ -348,79 +309,106 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	go func() {
-		// Use a detached context so the agent run isn't cancelled when the
-		// POST response is sent and the client connection closes.
 		ctx := context.WithoutCancel(r.Context())
-		rep := &runReporter{run: run}
-		var result string
-		var err error
 
-		// Snapshot the current LLM history to pass into the agent.
 		h.mu.Lock()
 		history := make([]llm.Message, len(session.LLMHistory))
 		copy(history, session.LLMHistory)
 		h.mu.Unlock()
 
+		var result string
 		var updatedHistory []llm.Message
+
 		if def == nil {
-			err = fmt.Errorf("agent %q not found", session.AgentName)
-		} else {
-			result, updatedHistory, err = h.runtime.RunWithReporter(ctx, def, content, rep, history)
+			run.publish(runEvent{typ: "error", data: fmt.Sprintf(
+				`<div class="flex justify-start"><div class="msg-assistant msg-error">%s</div></div>`,
+				template.HTMLEscapeString(fmt.Sprintf("Error: agent %q not found", session.AgentName)),
+			)})
+
+			h.mu.Lock()
+			session.Messages = append(session.Messages, Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Error: agent %q not found", session.AgentName),
+				Time:    time.Now(),
+			})
+			if session.ActiveRunID == runID {
+				session.ActiveRunID = ""
+			}
+			h.mu.Unlock()
+
+			time.AfterFunc(30*time.Second, func() {
+				h.mu.Lock()
+				delete(h.runs, runID)
+				h.mu.Unlock()
+			})
+			return
 		}
 
-		// Append to session and publish terminal event as an HTML fragment.
-		h.mu.Lock()
+		run.publish(runEvent{typ: "status", data: "Thinking..."})
+
+		agentResult, err := h.temporal.ExecuteWorkflowSync(ctx, temporal.RunAgentParams{
+			AgentName: def.Name,
+			Message:   content,
+			History:   history,
+		})
 		if err != nil {
 			slog.Error("agent run failed", "agent", session.AgentName, "error", err)
+
+			h.mu.Lock()
 			session.Messages = append(session.Messages, Message{
 				Role:    "assistant",
 				Content: "Error: " + err.Error(),
 				Time:    time.Now(),
 			})
-		} else {
-			session.Messages = append(session.Messages, Message{
-				Role:    "assistant",
-				Content: result,
-				Time:    time.Now(),
-			})
-			// Persist the full LLM history so subsequent messages have context.
-			session.LLMHistory = updatedHistory
-		}
-		h.mu.Unlock()
+			if session.ActiveRunID == runID {
+				session.ActiveRunID = ""
+			}
+			h.mu.Unlock()
 
-		if err != nil {
 			errHTML := fmt.Sprintf(
 				`<div class="flex justify-start"><div class="msg-assistant msg-error">%s</div></div>`,
 				template.HTMLEscapeString("Error: "+err.Error()),
 			)
 			run.publish(runEvent{typ: "done", data: errHTML})
-		} else {
-			doneHTML := fmt.Sprintf(
-				`<div class="flex justify-start"><div class="msg-assistant">%s</div></div>`,
-				string(renderMarkdown(result)),
-			)
-			run.publish(runEvent{typ: "done", data: doneHTML})
+
+			time.AfterFunc(30*time.Second, func() {
+				h.mu.Lock()
+				delete(h.runs, runID)
+				h.mu.Unlock()
+			})
+			return
 		}
 
-		// Clear the active run ID on the session immediately so pollers stop finding it.
+		result = agentResult.Response
+		updatedHistory = agentResult.History
+
 		h.mu.Lock()
+		session.Messages = append(session.Messages, Message{
+			Role:    "assistant",
+			Content: result,
+			Time:    time.Now(),
+		})
+		session.LLMHistory = updatedHistory
 		if session.ActiveRunID == runID {
 			session.ActiveRunID = ""
 		}
 		h.mu.Unlock()
 
-		// Keep the run in the map for a grace period so that clients which
-		// auto-reconnect or connect late can still get the replay buffer.
+		doneHTML := fmt.Sprintf(
+			`<div class="flex justify-start"><div class="msg-assistant">%s</div></div>`,
+			string(renderMarkdown(result)),
+		)
+		run.publish(runEvent{typ: "done", data: doneHTML})
+
 		time.AfterFunc(30*time.Second, func() {
 			h.mu.Lock()
 			delete(h.runs, runID)
 			h.mu.Unlock()
 		})
+
+		_ = result
 	}()
 
-	// Return an HTML partial with OOB user-message + thinking/SSE container.
-	// The form has hx-target="#message-list" hx-swap="beforeend" so the main
-	// body (thinking container) is appended after the OOB user bubble.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.renderPartial(w, "post-message-response", postMessageData{
 		Content:   content,
@@ -435,7 +423,6 @@ type postMessageData struct {
 	RunID     string
 }
 
-// activeRun returns the current active run ID for a session, or 204 if none.
 func (h *Handler) activeRun(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	h.mu.Lock()
@@ -460,10 +447,6 @@ func (h *Handler) activeRun(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, runID)
 }
 
-// runEvents streams SSE events for a given run ID.
-// Status events carry plain-text updates; the terminal "done" event carries
-// an HTML fragment that replaces the thinking container client-side via
-// the htmx-ext-sse extension.
 func (h *Handler) runEvents(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 
@@ -497,12 +480,8 @@ func (h *Handler) runEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			switch evt.typ {
 			case "status":
-				// Plain text — htmx SSE innerHTML-swaps the thinking span.
 				fmt.Fprintf(w, "event: status\ndata: %s\n\n", template.HTMLEscapeString(evt.data))
 			case "done":
-				// evt.data is already an HTML fragment built by postMessage.
-				// SSE requires each newline in the payload to be prefixed with
-				// "data: " so multi-line HTML isn't truncated at the first newline.
 				sseData := strings.ReplaceAll(evt.data, "\n", "\ndata: ")
 				fmt.Fprintf(w, "event: done\ndata: %s\n\n", sseData)
 			}
@@ -516,8 +495,6 @@ func (h *Handler) runEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// --- Agents page ---
-
 type agentsPageData struct {
 	ActivePage string
 	Agents     []*config.Definition
@@ -525,7 +502,7 @@ type agentsPageData struct {
 
 type agentEditorData struct {
 	Def                  *config.Definition
-	StructuredOutputJSON string // JSON for the structured output panel; empty if not set
+	StructuredOutputJSON string
 }
 
 func (h *Handler) agentsPage(w http.ResponseWriter, r *http.Request) {
@@ -566,12 +543,10 @@ func (h *Handler) agentEditPartial(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// newAgentEditor renders a blank editor for creating a new agent.
 func (h *Handler) newAgentEditor(w http.ResponseWriter, r *http.Request) {
 	h.renderPartial(w, "agent-editor-new", agentEditorData{Def: &config.Definition{}})
 }
 
-// saveAgentForm handles PUT /agents/{name} — saves an existing agent via the form UI.
 func (h *Handler) saveAgentForm(w http.ResponseWriter, r *http.Request) {
 	originalName := r.PathValue("name")
 	def, err := definitionFromForm(r)
@@ -608,7 +583,6 @@ func (h *Handler) saveAgentForm(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// createAgentFormNew handles POST /agents/form — creates a new agent via the form UI.
 func (h *Handler) createAgentFormNew(w http.ResponseWriter, r *http.Request) {
 	def, err := definitionFromForm(r)
 	if err != nil {
@@ -637,9 +611,6 @@ func (h *Handler) createAgentFormNew(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// cloneAgentName returns the next available clone name for src.
-// exists is called to check whether a candidate name is already taken.
-// Returns an error if all 10 candidate names are taken.
 func cloneAgentName(src string, exists func(string) bool) (string, error) {
 	candidate := src + "-copy"
 	if !exists(candidate) {
@@ -654,7 +625,6 @@ func cloneAgentName(src string, exists func(string) bool) (string, error) {
 	return "", fmt.Errorf("too many copies of %q", src)
 }
 
-// cloneAgent handles POST /agents/{name}/clone.
 func (h *Handler) cloneAgent(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	src := h.store.GetDefinition(name)
@@ -695,7 +665,6 @@ type saveYamlData struct {
 	Agents []*config.Definition
 }
 
-// structuredOutputJSON marshals def.StructuredOutput to indented JSON, or returns "" if nil.
 func structuredOutputJSON(def *config.Definition) string {
 	if def == nil || def.StructuredOutput == nil {
 		return ""
@@ -707,8 +676,6 @@ func structuredOutputJSON(def *config.Definition) string {
 	return string(b)
 }
 
-// definitionFromForm builds a Definition from form values.
-// Kind and Name must be set by the caller.
 func definitionFromForm(r *http.Request) (*config.Definition, error) {
 	def := &config.Definition{
 		Kind:         config.KindAgent,
@@ -745,7 +712,6 @@ func definitionFromForm(r *http.Request) (*config.Definition, error) {
 	return def, nil
 }
 
-// deleteAgentWeb handles web UI agent deletion.
 func (h *Handler) deleteAgentWeb(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := h.store.DeleteDefinition(name); err != nil {
@@ -753,13 +719,9 @@ func (h *Handler) deleteAgentWeb(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to delete", http.StatusInternalServerError)
 		return
 	}
-	// Return the updated agent list; agent row will be removed by hx-swap="outerHTML" with empty content.
 	h.renderPartial(w, "agent-list-items", agentsPageData{Agents: h.store.ListDefinitions()})
 }
 
-// --- Tools page ---
-
-// toolInfo is a view-model for a single discovered tool.
 type toolInfo struct {
 	QualifiedName string
 	Server        string
@@ -811,7 +773,6 @@ func (h *Handler) buildServerTools() []serverTools {
 	return servers
 }
 
-// toolGenerateData is the view-model for the generated tool list partial.
 type toolGenerateData struct {
 	YAML     string
 	Selected int
@@ -839,11 +800,9 @@ func (h *Handler) toolGeneratePartial(w http.ResponseWriter, r *http.Request) {
 	h.renderPartial(w, "tool-generate-result", toolGenerateData{
 		YAML:     buf.String(),
 		Selected: len(tools),
-		Lines:    len(tools) + 1, // header line + one per tool
+		Lines:    len(tools) + 1,
 	})
 }
-
-// --- helpers ---
 
 func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -878,136 +837,4 @@ func (h *Handler) orderedSessions() []*Session {
 
 func newID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
-}
-
-// --- Runs page ---
-
-type runsPageData struct {
-	ActivePage    string
-	Runs          []*api.RunHistory
-	Agents        []string
-	AgentFilter   string
-	StatusFilter  string
-	SelectedRunID string
-	Run           *api.RunHistory
-}
-
-func (h *Handler) runsPage(w http.ResponseWriter, r *http.Request) {
-	agentFilter := r.URL.Query().Get("agent")
-	statusFilter := api.RunStatus(r.URL.Query().Get("status"))
-
-	runs := h.history.List(agentFilter, statusFilter)
-	agents := h.history.ListAgents()
-
-	data := runsPageData{
-		ActivePage:   "runs",
-		Runs:         runs,
-		Agents:       agents,
-		AgentFilter:  agentFilter,
-		StatusFilter: string(statusFilter),
-	}
-
-	if r.Header.Get("HX-Request") == "true" {
-		h.renderPartial(w, "runs-content", data)
-		return
-	}
-
-	h.render(w, "runs.html", data)
-}
-
-func (h *Handler) runsListPartial(w http.ResponseWriter, r *http.Request) {
-	agentFilter := r.URL.Query().Get("agent")
-	statusFilter := api.RunStatus(r.URL.Query().Get("status"))
-
-	runs := h.history.List(agentFilter, statusFilter)
-
-	data := runsPageData{
-		Runs:         runs,
-		AgentFilter:  agentFilter,
-		StatusFilter: string(statusFilter),
-	}
-	h.renderPartial(w, "runs-list", data)
-}
-
-func (h *Handler) runDetailPage(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	run := h.history.Get(id)
-	if run == nil {
-		http.Error(w, "run not found", http.StatusNotFound)
-		return
-	}
-
-	runs := h.history.List("", "")
-	agents := h.history.ListAgents()
-
-	data := runsPageData{
-		ActivePage:    "runs",
-		Runs:          runs,
-		Agents:        agents,
-		SelectedRunID: id,
-		Run:           run,
-	}
-
-	if r.Header.Get("HX-Request") == "true" {
-		h.renderPartial(w, "run-detail-content", data)
-		return
-	}
-
-	h.render(w, "runs.html", data)
-}
-
-func (h *Handler) runHistoryEvents(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
-	run := h.history.Get(id)
-	if run == nil {
-		http.Error(w, "run not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	lastStatus := run.Status
-	lastTurnCount := len(run.Turns)
-
-	for {
-		select {
-		case <-ticker.C:
-			run = h.history.Get(id)
-			if run == nil {
-				return
-			}
-
-			if run.Status != lastStatus || len(run.Turns) != lastTurnCount {
-				lastStatus = run.Status
-				lastTurnCount = len(run.Turns)
-
-				data := runsPageData{Run: run}
-				var buf strings.Builder
-				if err := h.tmpl.ExecuteTemplate(&buf, "run-detail-content", data); err == nil {
-					sseData := strings.ReplaceAll(buf.String(), "\n", "\ndata: ")
-					fmt.Fprintf(w, "event: update\ndata: %s\n\n", sseData)
-					flusher.Flush()
-				}
-			}
-
-			if run.Status == api.RunStatusCompleted || run.Status == api.RunStatusFailed || run.Status == api.RunStatusCanceled {
-				return
-			}
-
-		case <-r.Context().Done():
-			return
-		}
-	}
 }

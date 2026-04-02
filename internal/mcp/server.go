@@ -11,35 +11,29 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/angoo/agentfile/internal/agent"
 	"github.com/angoo/agentfile/internal/config"
 	"github.com/angoo/agentfile/internal/mcpclient"
 	"github.com/angoo/agentfile/internal/registry"
+	"github.com/angoo/agentfile/internal/temporal"
 )
 
-// Manager creates and manages scoped MCP Streamable HTTP servers.
-// - /servers/default exposes all discovered tools from external MCP servers
-// - /servers/{agent-name} exposes only the tools/agents declared in that agent's config
 type Manager struct {
-	reg          *registry.Registry
-	pool         *mcpclient.Pool
-	agentRuntime *agent.Runtime
-	mu           sync.RWMutex
-	servers      map[string]*server.StreamableHTTPServer // name -> server
+	reg      *registry.Registry
+	pool     *mcpclient.Pool
+	temporal *temporal.Client
+	mu       sync.RWMutex
+	servers  map[string]*server.StreamableHTTPServer
 }
 
-// NewManager creates a new MCP server manager.
-func NewManager(reg *registry.Registry, pool *mcpclient.Pool, agentRuntime *agent.Runtime) *Manager {
+func NewManager(reg *registry.Registry, pool *mcpclient.Pool, temporalClient *temporal.Client) *Manager {
 	return &Manager{
-		reg:          reg,
-		pool:         pool,
-		agentRuntime: agentRuntime,
-		servers:      make(map[string]*server.StreamableHTTPServer),
+		reg:      reg,
+		pool:     pool,
+		temporal: temporalClient,
+		servers:  make(map[string]*server.StreamableHTTPServer),
 	}
 }
 
-// RegisterRoutes sets up the HTTP routes for all MCP servers.
-// StreamableHTTP is a single handler per server — POST/GET/DELETE all go to the same path.
 func (m *Manager) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/servers/{name}", m.handle)
 	slog.Info("MCP routes registered", "pattern", "/servers/{name}")
@@ -66,7 +60,6 @@ func (m *Manager) getOrCreateServer(name string) *server.StreamableHTTPServer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Double-check
 	if srv, ok := m.servers[name]; ok {
 		return srv
 	}
@@ -84,7 +77,6 @@ func (m *Manager) getOrCreateServer(name string) *server.StreamableHTTPServer {
 	return srv
 }
 
-// createDefaultServer creates the default MCP server exposing all discovered tools.
 func (m *Manager) createDefaultServer() *server.StreamableHTTPServer {
 	mcpServer := server.NewMCPServer("agentfile-default", "1.0.0",
 		server.WithToolCapabilities(true),
@@ -101,7 +93,6 @@ func (m *Manager) createDefaultServer() *server.StreamableHTTPServer {
 	return srv
 }
 
-// createAgentServer creates an MCP server scoped to a specific agent's declared tools.
 func (m *Manager) createAgentServer(name string) *server.StreamableHTTPServer {
 	agentDef, ok := m.reg.GetAgentDef(name)
 	if !ok {
@@ -115,7 +106,6 @@ func (m *Manager) createAgentServer(name string) *server.StreamableHTTPServer {
 
 	toolCount := 0
 	for _, ref := range agentDef.Tools {
-		// Try as namespaced MCP tool: "server.tool"
 		if serverName, toolName, ok := parseRef(ref); ok {
 			dt, found := m.pool.GetTool(serverName, toolName)
 			if found {
@@ -128,7 +118,6 @@ func (m *Manager) createAgentServer(name string) *server.StreamableHTTPServer {
 			continue
 		}
 
-		// Try as agent-as-tool
 		if refAgentDef, ok := m.reg.GetAgentDef(ref); ok {
 			m.addAgentAsTool(mcpServer, refAgentDef)
 			toolCount++
@@ -144,7 +133,6 @@ func (m *Manager) createAgentServer(name string) *server.StreamableHTTPServer {
 	return srv
 }
 
-// addDiscoveredTool adds a tool from the MCP client pool to an MCP server.
 func (m *Manager) addDiscoveredTool(mcpServer *server.MCPServer, dt *mcpclient.DiscoveredTool) {
 	qualifiedName := dt.QualifiedName()
 
@@ -167,14 +155,13 @@ func (m *Manager) addDiscoveredTool(mcpServer *server.MCPServer, dt *mcpclient.D
 	})
 }
 
-// addAgentAsTool adds an agent as a callable tool on an MCP server.
 func (m *Manager) addAgentAsTool(mcpServer *server.MCPServer, def *config.Definition) {
 	mcpTool := mcp.NewTool(def.Name,
 		mcp.WithDescription(def.Description),
 		mcp.WithString("message", mcp.Description("The message/request to send to this agent"), mcp.Required()),
 	)
 
-	rt := m.agentRuntime
+	tc := m.temporal
 	agentDef := def
 
 	mcpServer.AddTool(mcpTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -183,12 +170,15 @@ func (m *Manager) addAgentAsTool(mcpServer *server.MCPServer, def *config.Defini
 			return mcp.NewToolResultError("message argument is required and must be a string"), nil
 		}
 
-		result, err := rt.Run(ctx, agentDef, message)
+		result, err := tc.ExecuteWorkflowSync(ctx, temporal.RunAgentParams{
+			AgentName: agentDef.Name,
+			Message:   message,
+		})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("agent error: %v", err)), nil
 		}
 
-		return mcp.NewToolResultText(result), nil
+		return mcp.NewToolResultText(result.Response), nil
 	})
 }
 
@@ -200,7 +190,6 @@ func parseRef(ref string) (serverName, toolName string, ok bool) {
 	return ref[:idx], ref[idx+1:], true
 }
 
-// RefreshAll invalidates all servers so they get recreated on next access.
 func (m *Manager) RefreshAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -208,7 +197,6 @@ func (m *Manager) RefreshAll() {
 	slog.Info("all MCP servers invalidated")
 }
 
-// Shutdown stops all servers.
 func (m *Manager) Shutdown(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
