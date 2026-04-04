@@ -164,10 +164,10 @@
     .thinking-bubble {
       background: var(--bg-card); border: 1px solid var(--border); border-bottom-left-radius: 4px;
       padding: 14px 18px; border-radius: 14px;
-      display: flex; align-items: center; gap: 8px;
+      display: flex; align-items: baseline; gap: 8px;
     }
     .thinking-label {
-      font-size: 0.85rem; color: var(--text-muted);
+      font-size: 0.9rem; color: var(--text-muted);
     }
     .thinking-dot {
       width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted);
@@ -270,9 +270,12 @@ function startRunStream(runId, container) {
   var messageList = document.getElementById("message-list");
   var bubbles = [];
   var currentBubble = null;
-  var statusEl = null;
+  var statusRow = null;
+
+  showStatus("Thinking...");
 
   function createBubble() {
+    removeStatus();
     var row = document.createElement("div");
     row.className = "msg-row msg-left";
     var bubble = document.createElement("div");
@@ -282,29 +285,28 @@ function startRunStream(runId, container) {
     messageList.appendChild(row);
     bubbles.push({ row: row, bubble: bubble });
     currentBubble = bubble;
-    removeStatus();
     scrollToBottom();
     return bubble;
   }
 
   function showStatus(text) {
-    if (currentBubble) {
-      container.innerHTML = "";
-    }
-    if (statusEl) {
-      var label = statusEl.querySelector(".thinking-label");
+    if (statusRow) {
+      var label = statusRow.querySelector(".thinking-label");
       if (label) label.textContent = text;
+      scrollToBottom();
       return;
     }
-    container.innerHTML = '<div class="thinking-bubble"><span class="thinking-label">' + text + '</span><div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div></div>';
-    statusEl = container.firstElementChild;
+    statusRow = document.createElement("div");
+    statusRow.className = "msg-row msg-left";
+    statusRow.innerHTML = '<div class="thinking-bubble"><span class="thinking-label">' + text + '</span><div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div></div>';
+    messageList.appendChild(statusRow);
     scrollToBottom();
   }
 
   function removeStatus() {
-    if (statusEl && statusEl.parentNode) {
-      statusEl.remove();
-      statusEl = null;
+    if (statusRow) {
+      statusRow.remove();
+      statusRow = null;
     }
   }
 
@@ -313,14 +315,11 @@ function startRunStream(runId, container) {
   }
 
   es.addEventListener("response_start", function(e) {
-    container.innerHTML = "";
-    statusEl = null;
     createBubble();
   });
 
   es.addEventListener("token", function(e) {
     if (!currentBubble) {
-      container.innerHTML = "";
       createBubble();
     }
     currentBubble.textContent += e.data;
@@ -332,6 +331,7 @@ function startRunStream(runId, container) {
   });
 
   function finalizeLastBubble(htmlData) {
+    removeStatus();
     var wrapper = document.createElement("div");
     wrapper.innerHTML = htmlData;
     var inner = wrapper.querySelector(".msg-assistant");
@@ -356,7 +356,6 @@ function startRunStream(runId, container) {
       bubbles[i].bubble.className = "bubble bubble-bot";
     }
 
-    removeStatus();
     container.remove();
   }
 
@@ -424,11 +423,7 @@ function startRunStream(runId, container) {
   <div id="message-list" class="chat-body">
     {{template "messages" .Current.Messages}}
     {{if .ActiveRunID}}
-    <div id="run-{{.ActiveRunID}}" class="msg-row msg-left">
-      <div class="thinking-bubble">
-        <div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div>
-      </div>
-    </div>
+    <div id="run-{{.ActiveRunID}}" class="msg-row msg-left"></div>
     <script>
       (function(){
         var runId = "{{.ActiveRunID}}";
@@ -516,11 +511,7 @@ function startRunStream(runId, container) {
 <div class="msg-row msg-right">
   <div class="bubble bubble-user">{{.Content}}</div>
 </div>
-<div id="run-{{.RunID}}" class="msg-row msg-left">
-  <div class="thinking-bubble">
-    <div class="thinking-dot"></div><div class="thinking-dot"></div><div class="thinking-dot"></div>
-  </div>
-</div>
+<div id="run-{{.RunID}}" class="msg-row msg-left"></div>
 <script>
   (function(){
     var runId = "{{.RunID}}";
