@@ -329,6 +329,8 @@ function startRunStream(runId, container) {
       bubbles[i].bubble.style.whiteSpace = "";
       bubbles[i].bubble.className = "bubble bubble-bot";
     }
+
+    container.remove();
   });
 
   es.addEventListener("error", function(e) {
@@ -352,6 +354,8 @@ function startRunStream(runId, container) {
         bubbles[i].bubble.className = "bubble bubble-bot";
       }
     }
+
+    container.remove();
   });
 
   es.onerror = function() {
@@ -427,6 +431,7 @@ function startRunStream(runId, container) {
       hx-post="/chat/sessions/{{.Current.ID}}/messages"
       hx-target="#message-list"
       hx-swap="beforeend"
+      hx-on::after-request="this.reset()"
     >
       <div class="input-wrap">
         <textarea
@@ -490,10 +495,8 @@ function startRunStream(runId, container) {
 {{end}}
 
 {{define "post-message-response"}}
-<div hx-swap-oob="beforeend:#message-list">
-  <div class="msg-row msg-right">
-    <div class="bubble bubble-user">{{.Content}}</div>
-  </div>
+<div class="msg-row msg-right">
+  <div class="bubble bubble-user">{{.Content}}</div>
 </div>
 <div id="run-{{.RunID}}" class="msg-row msg-left">
   <div class="thinking-bubble">
