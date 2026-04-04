@@ -57,7 +57,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/internal/mcp/call", h.mcpProxyCall)
 	mux.HandleFunc("POST /api/internal/streams/{id}/tokens", h.publishStreamToken)
 	mux.HandleFunc("POST /api/internal/streams/{id}/events", h.publishStreamEvent)
-	mux.HandleFunc("POST /api/internal/streams/{id}/events", h.publishStreamEvent)
 
 	slog.Info("API routes registered", "prefix", "/api/v1")
 }
